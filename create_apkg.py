@@ -21,7 +21,7 @@ my_deck = genanki.Deck(
 
 # Define the model for the cards
 my_model = genanki.Model(
-    MODEL_ID,  # Unique ID for the model
+    MODEL_ID,
     'AWS Exam Question Model',
     fields=[
         {'name': 'Question'},
@@ -49,8 +49,9 @@ my_model = genanki.Model(
                 <br><b>Correct Answer(s):</b> {{CorrectOptions}}
             </div>
             ''',
-            'css': '''
-.card {
+        }
+    ],
+    css='''.card {
     font-family: Arial, sans-serif;
     font-size: 18px;
     text-align: left;
@@ -71,10 +72,7 @@ li {
 .correct {
     color: green;
     font-weight: bold;
-}
-            '''
-        },
-    ]
+}'''
 )
 
 # Function to process the text file and add cards to the deck
