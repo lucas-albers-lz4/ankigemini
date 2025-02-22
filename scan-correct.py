@@ -454,25 +454,14 @@ def load_safe_checkpoint(checkpoint_filepath):
     return 0, None
 
 @retry_on_429
-def batch_check_accuracy_gemini(questions_data, client, max_output_tokens=8192, max_batch_size=10):
-    """
-    Batch check accuracy for multiple questions using a single API call.
-    
-    :param questions_data: List of dictionaries with 'question' and 'correct_answer' keys
-    :param client: Ignored in new implementation (using global MODEL)
-    :param max_output_tokens: Maximum tokens for response
-    :param max_batch_size: Maximum number of questions to process in a single batch
-    :return: List of (is_accurate, accuracy_response) tuples
-    """
+def batch_check_accuracy_gemini(questions_data, client=None, max_output_tokens=8192, max_batch_size=10):
     try:
-        # Ensure we process the full batch
         questions_data = questions_data[:max_batch_size]
         
         if not questions_data:
             logger.error("No questions to process in batch")
             return []
 
-        # Estimate total tokens
         total_estimated_tokens = sum(
             len(str(item.get('question', '')).split()) + len(str(item.get('correct_answer', '')).split()) + 1000 
             for item in questions_data
@@ -481,49 +470,29 @@ def batch_check_accuracy_gemini(questions_data, client, max_output_tokens=8192, 
         logger.info(f"Batch checking accuracy for {len(questions_data)} questions (Max Batch Size: {max_batch_size})")
         logger.info(f"Estimated total tokens: {total_estimated_tokens}")
         
-        # More robust and flexible prompt
+        # Add debug logging for the actual prompt
         prompt = f"""
         Batch Accuracy Verification for AWS Cloud Practitioner Questions
 
         Carefully evaluate each question and its current answer.
-        Respond EXACTLY in this format, covering ALL questions:
+        Respond EXACTLY in this format for EACH question:
         1. [Accurate/Inaccurate]: Concise explanation
         2. [Accurate/Inaccurate]: Concise explanation
-        3. [Accurate/Inaccurate]: Concise explanation
         ...and so on.
 
-        CRITICAL INSTRUCTIONS:
-        - Provide a response for EVERY question in the batch
-        - Use the exact format: [Number]. [Accurate/Inaccurate]: Explanation
-        - Be precise and concise in your explanations
-
-        Questions:
+        Questions to evaluate:
         {chr(10).join(
             f"{i+1}. Q: {item.get('question', 'N/A')}\n   A: {item.get('correct_answer', 'N/A')}" 
             for i, item in enumerate(questions_data)
         )}
         
-        ENSURE A RESPONSE FOR EACH QUESTION IS PROVIDED.
+        IMPORTANT: Provide numbered responses matching the question numbers above.
         """
 
-        # Wait for rate limit with token estimation
         rate_limiter.wait_if_needed(total_estimated_tokens)
-        
-        # Start a new chat session for each batch
         chat_session = MODEL.start_chat(history=[])
+        response = chat_session.send_message(prompt)
         
-        # Use generation config to control response
-        generation_config = {
-            "temperature": 0.2,  # Lower temperature for more consistent responses
-            "max_output_tokens": max_output_tokens,
-        }
-        
-        response = chat_session.send_message(
-            prompt, 
-            generation_config=generation_config
-        )
-        
-        # Check for empty or None response
         if not response or not response.text:
             logger.error("Received empty response from Gemini API")
             return [(False, "Empty API response") for _ in range(len(questions_data))]
@@ -531,61 +500,56 @@ def batch_check_accuracy_gemini(questions_data, client, max_output_tokens=8192, 
         content = response.text.strip()
         logger.info(f"Batch accuracy check response received: {content[:500]}...")
 
-        # Reset consecutive 429s on successful request
-        rate_limiter.reset_consecutive_429s()
+        # Add detailed parsing debug logs
+        logger.debug("Starting response parsing")
+        logger.debug(f"Raw response content:\n{content}")
 
-        # More robust parsing with multiple parsing strategies
+        # First try strict regex matching
         results = []
         lines = content.split('\n')
         
-        # First, try strict regex matching
-        for line in lines:
-            line = line.strip()
-            # Flexible regex to match various response formats
+        # Log each line for debugging
+        for i, line in enumerate(lines):
+            logger.debug(f"Parsing line {i+1}: {line}")
             match = re.match(r'^(\d+)\.\s*\[(Accurate|Inaccurate)\]:\s*(.+)', line, re.IGNORECASE)
             if match:
                 index = int(match.group(1)) - 1
                 is_accurate = match.group(2).lower() == 'accurate'
+                explanation = match.group(3).strip()
+                logger.debug(f"Matched line {i+1}: index={index}, accurate={is_accurate}, explanation={explanation[:50]}...")
                 
-                # Ensure we don't go out of bounds
                 if 0 <= index < len(questions_data):
                     results.append((is_accurate, line))
-            
-            # Stop if we've processed enough results
-            if len(results) == len(questions_data):
-                break
+            else:
+                logger.debug(f"Line {i+1} did not match expected format")
         
-        # If strict parsing fails, try a more lenient approach
+        # Log parsing results
+        logger.debug(f"Strict parsing found {len(results)} results out of {len(questions_data)} expected")
+        
+        # If strict parsing fails, try lenient parsing
         if len(results) < len(questions_data):
             logger.warning("Strict parsing failed. Attempting lenient parsing.")
+            logger.debug("Starting lenient parsing")
             results = []
             for line in lines:
                 line = line.strip()
-                # More lenient parsing
                 if re.search(r'(Accurate|Inaccurate)', line, re.IGNORECASE):
                     is_accurate = 'accurate' in line.lower()
+                    logger.debug(f"Lenient parsing matched line: {line[:50]}...")
                     results.append((is_accurate, line))
-                
-                if len(results) == len(questions_data):
-                    break
+                else:
+                    logger.debug(f"Lenient parsing failed to match line: {line[:50]}...")
         
-        # Pad results if necessary to match batch size
+        # Pad results if necessary
         while len(results) < len(questions_data):
-            results.append((False, "Unable to process"))
+            logger.warning(f"Missing results - padding with default values. Expected {len(questions_data)}, got {len(results)}")
+            results.append((False, "Failed to parse response"))
         
-        # Truncate results to match input batch size
-        results = results[:len(questions_data)]
-        
-        # Log any parsing issues
-        if len(results) != len(questions_data):
-            logger.warning(f"Mismatch in batch results. Expected {len(questions_data)}, got {len(results)}")
-            logger.warning(f"Full response content: {content}")
-        
+        rate_limiter.reset_consecutive_429s()
         return results
 
     except Exception as e:
         logger.error(f"Error during batch accuracy check: {str(e)}", exc_info=True)
-        # Return a list of failures matching the input length
         return [(False, f"Error: {str(e)}") for _ in range(len(questions_data))]
 
 @retry_on_429
@@ -684,34 +648,36 @@ def generate_better_answer_gemini(question, correct_answer, client=None, max_out
         logger.error(f"Error during API call: {str(e)}", exc_info=True)
         raise
 
-def is_low_quality_answer(text, min_length=20, max_length=500):
+def is_low_quality_answer(text, min_length=50, max_length=1000):
     """
-    Check if an answer is low quality based on:
-    1. Length constraints
-    2. Presence of meaningful content
-    3. Avoiding generic or repetitive responses
+    Check if an answer is low quality based on improved criteria.
     """
-    # Check length constraints
+    # Length constraints
     if len(text) < min_length or len(text) > max_length:
         return True
     
-    # Check for generic or placeholder responses
+    # Generic or unhelpful responses
     generic_patterns = [
-        r'^[A-Z]\.',  # Just starts with a letter and period
-        r'The correct answer is',
-        r'Based on the question',
-        r'This answer is',
-        r'Option [A-D] is correct',
+        r'^(just|only|simply)\s+',  # Oversimplified starts
+        r'^(the\s+)?(correct\s+)?answer\s+is\s+[A-D]$',  # Just stating the letter
+        r'^\s*$',  # Empty or whitespace only
+        r'^[A-D]\.?\s*$'  # Single letter answers
     ]
     
     for pattern in generic_patterns:
         if re.match(pattern, text.strip(), re.IGNORECASE):
             return True
     
-    # Check for repetitive content
-    words = text.split()
+    # Check for AWS-specific content
+    aws_terms = ['aws', 'amazon', 'cloud', 'service']
+    if not any(term in text.lower() for term in aws_terms):
+        return True
+    
+    # More nuanced repetition check
+    words = text.lower().split()
     unique_words = len(set(words))
-    if unique_words < len(words) * 0.3:  # Less than 30% unique words
+    # Exclude common AWS terms from repetition calculation
+    if unique_words < len(words) * 0.25 and len(words) > 20:  # Only check longer answers
         return True
     
     return False
