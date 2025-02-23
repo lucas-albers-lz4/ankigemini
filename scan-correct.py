@@ -10,6 +10,11 @@ import threading
 from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
+from pathlib import Path
+
+# Suppress GRPC shutdown warning
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='absl')
 
 # Load environment variables
 load_dotenv()
@@ -355,101 +360,34 @@ def retry_on_429(func):
                 raise
     return wrapper
 
-def save_progress(data, output_filepath, current_index):
-    """Save current progress to a temporary file"""
-    temp_filepath = f"{output_filepath}.temp"
-    logger.info(f"Saving progress to {temp_filepath} at index {current_index}")
-    with open(temp_filepath, 'w', encoding='utf-8') as f:
-        json.dump({
-            'current_index': current_index,
-            'data': data[:current_index + 1]
-        }, f)
-
-def load_progress(output_filepath):
-    """Load progress from temporary file if it exists"""
-    temp_filepath = f"{output_filepath}.temp"
+def save_checkpoint(data, output_filepath, current_index):
+    """Save current progress to a checkpoint file."""
+    checkpoint_dir = Path('checkpoints')
+    checkpoint_dir.mkdir(exist_ok=True)
+    
+    checkpoint_file = checkpoint_dir / f"{Path(output_filepath).name}.checkpoint"
+    checkpoint_data = {
+        'current_index': current_index,
+        'data': data[:current_index + 1]
+    }
+    
     try:
-        if os.path.exists(temp_filepath):
-            with open(temp_filepath, 'r', encoding='utf-8') as f:
-                progress = json.load(f)
-                logger.info(f"Loaded progress from {temp_filepath}, resuming from index {progress['current_index']}")
-                return progress['current_index'], progress['data']
+        checkpoint_file.write_text(json.dumps(checkpoint_data, indent=2), encoding='utf-8')
+        logger.info(f"Checkpoint saved at index {current_index}")
     except Exception as e:
-        logger.warning(f"Failed to load progress: {str(e)}")
-    return 0, None
+        logger.error(f"Failed to save checkpoint: {e}")
 
-def save_safe_checkpoint(data, checkpoint_filepath, current_index):
-    """
-    Save a checkpoint with additional error handling and consistency checks.
+def load_checkpoint(output_filepath):
+    """Load progress from checkpoint if it exists."""
+    checkpoint_file = Path('checkpoints') / f"{Path(output_filepath).name}.checkpoint"
     
-    :param data: Data to save
-    :param checkpoint_filepath: Path to save checkpoint
-    :param current_index: Current processing index
-    """
     try:
-        # Ensure checkpoints directory exists
-        os.makedirs('checkpoints', exist_ok=True)
-        
-        # Create a temporary checkpoint file first
-        temp_checkpoint_filepath = f"{checkpoint_filepath}.tmp"
-        
-        # Checkpoint data with additional metadata for recovery
-        checkpoint_data = {
-            'timestamp': datetime.now().isoformat(),
-            'current_index': current_index,
-            'total_questions': len(data),
-            'data': data[:current_index + 1],
-            'version': '1.0'  # Version for future compatibility
-        }
-        
-        # Write to temporary file first
-        with open(temp_checkpoint_filepath, 'w', encoding='utf-8') as f:
-            json.dump(checkpoint_data, f, indent=2)
-        
-        # Atomically replace the actual checkpoint file
-        os.replace(temp_checkpoint_filepath, checkpoint_filepath)
-        
-        logger.info(f"Safe checkpoint saved to {checkpoint_filepath} at index {current_index}")
-    
+        if checkpoint_file.exists():
+            data = json.loads(checkpoint_file.read_text(encoding='utf-8'))
+            logger.info(f"Loaded checkpoint, resuming from index {data['current_index']}")
+            return data['current_index'], data['data']
     except Exception as e:
-        logger.error(f"Error saving checkpoint: {str(e)}", exc_info=True)
-        # Attempt to log error details without raising
-        try:
-            with open('checkpoint_errors.log', 'a') as error_log:
-                error_log.write(f"{datetime.now().isoformat()} - Checkpoint Error: {str(e)}\n")
-        except:
-            pass
-
-def load_safe_checkpoint(checkpoint_filepath):
-    """
-    Load a checkpoint with robust error handling.
-    
-    :param checkpoint_filepath: Path to checkpoint file
-    :return: Tuple of (start_index, loaded_data)
-    """
-    try:
-        if os.path.exists(checkpoint_filepath):
-            with open(checkpoint_filepath, 'r', encoding='utf-8') as f:
-                checkpoint = json.load(f)
-            
-            # Validate checkpoint data
-            if not all(key in checkpoint for key in ['current_index', 'data', 'timestamp']):
-                logger.warning("Invalid checkpoint format")
-                return 0, None
-            
-            # Check checkpoint age
-            checkpoint_time = datetime.fromisoformat(checkpoint['timestamp'])
-            if datetime.now() - checkpoint_time > timedelta(days=7):
-                logger.warning("Checkpoint is too old, starting fresh")
-                return 0, None
-            
-            logger.info(f"Loaded safe checkpoint from {checkpoint_filepath}, resuming from index {checkpoint['current_index']}")
-            return checkpoint['current_index'], checkpoint['data']
-    
-    except json.JSONDecodeError:
-        logger.error("Checkpoint file is corrupted")
-    except Exception as e:
-        logger.error(f"Error loading checkpoint: {str(e)}")
+        logger.warning(f"Could not load checkpoint: {e}")
     
     return 0, None
 
@@ -559,14 +497,23 @@ def check_accuracy_gemini(question, correct_answer, client=None, max_output_toke
     estimated_tokens = len(question.split()) + len(correct_answer.split()) + 1000
     logger.info(f"Checking accuracy for question: {question[:100]}...")
     
-    prompt = f"""
-    Question: {question}
-    Correct Answer: {correct_answer}
+    prompt = f"""You are an AWS Certified Cloud Practitioner exam expert. Your task is to verify the accuracy of the given answer.
 
-    Is the "Correct Answer" truly the best and most accurate answer to the "Question", 
-    specifically in the context of AWS Cloud Practitioner knowledge?  Provide a brief explanation
-    and then state either "Accurate" or "Inaccurate". Return only this information with no preamble.
-    """
+QUESTION: {question}
+GIVEN ANSWER: {correct_answer}
+
+INSTRUCTIONS:
+1. Evaluate if the given answer is the BEST and most accurate response according to AWS Cloud Practitioner certification standards
+2. Consider ONLY official AWS documentation and best practices
+3. Ignore any minor formatting or grammatical issues
+4. Focus solely on technical accuracy and completeness
+5. Do not suggest alternative answers or improvements
+
+REQUIRED RESPONSE FORMAT:
+1. Brief explanation (1-2 sentences max)
+2. Single word verdict: MUST be either "Accurate" or "Inaccurate"
+
+DO NOT include any other text or explanations."""
 
     try:
         # Wait for rate limit with token estimation
@@ -596,33 +543,63 @@ def check_accuracy_gemini(question, correct_answer, client=None, max_output_toke
 def generate_better_answer_gemini(question, correct_answer, client=None, max_output_tokens=1024):
     """
     Generates a more detailed and comprehensive answer using the Gemini API.
-    
-    Aims to provide:
-    1. Explanation of why this is the correct answer
-    2. Context and background information
-    3. Practical implications or real-world relevance
-    4. Potential exam-related insights
     """
     # Estimate tokens: question + answer + prompt (~500) + max response (1024)
     estimated_tokens = len(question.split()) + len(correct_answer.split()) + 1524
     
-    prompt = f"""
-    Provide a comprehensive explanation for the following AWS Cloud Practitioner exam question:
+    prompt = f"""You are an AWS Certified Cloud Practitioner exam expert. Your task is to provide a comprehensive explanation for the following question.
 
-    Question: {question}
-    Current Correct Answer: {correct_answer}
+QUESTION: {question}
+CURRENT ANSWER: {correct_answer}
 
-    Generate a detailed response that includes:
-    1. A clear, concise explanation of why this is the correct answer
-    2. Contextual background information related to the topic
-    3. Practical real-world application or significance in cloud computing
-    4. Key points an exam taker should understand
-    5. Any related AWS services or concepts that provide additional insight
-    6. Common misconceptions or tricky aspects of this topic
+REQUIRED RESPONSE STRUCTURE:
+1. Core Explanation (2-3 sentences)
+   - Why this is the correct answer
+   - Key AWS concepts involved
 
-    Format your response to be clear, informative, and exam-preparation focused. 
-    Aim for a response that not only confirms the answer but provides deep understanding.
-    """
+2. Technical Context (2-3 bullet points)
+   - Relevant AWS services
+   - Service relationships/dependencies
+   - Technical limitations or requirements
+
+3. Real-world Application (1-2 sentences)
+   - Business use case
+   - Common implementation scenario
+
+4. Exam Tips (2-3 bullet points)
+   - Key points to remember
+   - Common misconceptions to avoid
+   - Related topics that might appear
+
+STRICT REQUIREMENTS:
+- Use ONLY official AWS terminology
+- Focus on Cloud Practitioner level knowledge
+- Keep explanations concise and clear
+- Include specific service names where relevant
+- Maintain professional, technical language
+- Format response in HTML with proper paragraph and list tags
+- Do not include personal opinions or non-AWS content
+- Do not suggest alternative answers
+- Do not include exam-taking strategies
+
+RESPONSE FORMAT:
+<div class="detailed-explanation">
+    <p><strong>Core Explanation:</strong></p>
+    [Your explanation here]
+    
+    <p><strong>Technical Context:</strong></p>
+    <ul>
+        [Your bullet points here]
+    </ul>
+    
+    <p><strong>Real-world Application:</strong></p>
+    [Your application example here]
+    
+    <p><strong>Exam Tips:</strong></p>
+    <ul>
+        [Your tips here]
+    </ul>
+</div>"""
 
     try:
         # Wait for rate limit with token estimation
@@ -635,52 +612,10 @@ def generate_better_answer_gemini(question, correct_answer, client=None, max_out
         # Reset consecutive 429s on successful request
         rate_limiter.reset_consecutive_429s()
         
-        # Enhance the response with structured formatting
-        detailed_answer = f"""
-        <div class="detailed-explanation">
-            <p><strong>Comprehensive Explanation:</strong></p>
-            {response.text}
-        </div>
-        """
-        
-        return detailed_answer
+        return response.text
     except Exception as e:
         logger.error(f"Error during API call: {str(e)}", exc_info=True)
         raise
-
-def is_low_quality_answer(text, min_length=50, max_length=1000):
-    """
-    Check if an answer is low quality based on improved criteria.
-    """
-    # Length constraints
-    if len(text) < min_length or len(text) > max_length:
-        return True
-    
-    # Generic or unhelpful responses
-    generic_patterns = [
-        r'^(just|only|simply)\s+',  # Oversimplified starts
-        r'^(the\s+)?(correct\s+)?answer\s+is\s+[A-D]$',  # Just stating the letter
-        r'^\s*$',  # Empty or whitespace only
-        r'^[A-D]\.?\s*$'  # Single letter answers
-    ]
-    
-    for pattern in generic_patterns:
-        if re.match(pattern, text.strip(), re.IGNORECASE):
-            return True
-    
-    # Check for AWS-specific content
-    aws_terms = ['aws', 'amazon', 'cloud', 'service']
-    if not any(term in text.lower() for term in aws_terms):
-        return True
-    
-    # More nuanced repetition check
-    words = text.lower().split()
-    unique_words = len(set(words))
-    # Exclude common AWS terms from repetition calculation
-    if unique_words < len(words) * 0.25 and len(words) > 20:  # Only check longer answers
-        return True
-    
-    return False
 
 def find_duplicate_answers(data):
     """
@@ -690,117 +625,258 @@ def find_duplicate_answers(data):
     duplicates = []
     
     for item in data:
-        answer = item['correct_answer']
+        answer = item.get('correct_answer')
+        if not answer:  # Skip None or empty answers
+            continue
+            
         if answer in answer_counts:
             duplicates.append({
-                'question': item['question'],
+                'question': item.get('question', ''),
                 'duplicate_of': answer_counts[answer]['question']
             })
         else:
             answer_counts[answer] = {
-                'question': item['question'],
+                'question': item.get('question', ''),
                 'count': 1
             }
     
     return duplicates
 
+def normalize_question(question):
+    """
+    Normalize question text to help identify duplicates while preserving original text
+    Returns tuple of (normalized_text, original_text)
+    """
+    if not question:
+        return "", ""
+    
+    # Store original text with only whitespace normalization
+    original_text = re.sub(r'\s+', ' ', question).strip()
+    
+    # Create normalized version for comparison (lowercase, no HTML)
+    normalized = re.sub(r'<[^>]+>', '', original_text)
+    normalized = re.sub(r'\s+', ' ', normalized)
+    normalized = normalized.lower()
+    
+    return normalized, original_text
+
+def normalize_answer(answer):
+    """
+    Normalize answer text to help identify duplicates while preserving original text
+    Returns tuple of (normalized_text, original_text)
+    """
+    if not answer:
+        return "", ""
+    
+    # Store original text with only whitespace normalization
+    original_text = re.sub(r'\s+', ' ', answer).strip()
+    
+    # Create normalized version for comparison (lowercase, no HTML)
+    normalized = re.sub(r'<[^>]+>', '', original_text)
+    normalized = re.sub(r'\s+', ' ', normalized)
+    normalized = normalized.lower()
+    
+    return normalized, original_text
+
+def deduplicate_data(data):
+    """
+    Remove duplicate questions and answers while preserving the best version
+    and maintaining original capitalization
+    """
+    logger.info("Starting deduplication process...")
+    
+    # Create a dictionary to store unique questions
+    unique_questions = {}
+    duplicates_removed = 0
+    
+    for item in data:
+        # Normalize question and answer for comparison while keeping original text
+        norm_question, orig_question = normalize_question(item.get('question', ''))
+        norm_answer, orig_answer = normalize_answer(item.get('correct_answer', ''))
+        
+        # Create a unique key combining normalized question and answer
+        unique_key = f"{norm_question}|{norm_answer}"
+        
+        if unique_key in unique_questions:
+            # If we already have this question, check which version is better
+            existing_item = unique_questions[unique_key]
+            
+            # Prefer items with more complete data
+            if (len(item.get('options', [])) > len(existing_item.get('options', [])) or
+                    len(item.get('correct_answer', '')) > len(existing_item.get('correct_answer', ''))):
+                # Store the item with original capitalization
+                unique_questions[unique_key] = item
+            
+            duplicates_removed += 1
+        else:
+            # Store the item with original capitalization
+            unique_questions[unique_key] = item
+    
+    logger.info(f"Deduplication complete. Removed {duplicates_removed} duplicates.")
+    return list(unique_questions.values())
+
 def validate_dataset(data):
     """
-    Comprehensive dataset validation
+    Comprehensive dataset validation with improved error handling and duplicate detection
+    while preserving original capitalization
     """
     logger.info("Starting comprehensive dataset validation")
     
+    if not data:
+        logger.warning("Empty dataset provided for validation")
+        return {
+            'duplicate_answers': [],
+            'missing_answers': 0,
+            'total_items': 0,
+            'duplicate_questions': 0
+        }
+    
+    # Track various issues
+    missing_answers = 0
+    duplicate_questions = 0
+    seen_questions = set()
+    
     # Check for duplicate answers
     duplicate_answers = find_duplicate_answers(data)
+    
+    # Check for missing answers and duplicates
+    for item in data:
+        # Check for missing answers
+        answer = item.get('correct_answer')
+        if answer is None:
+            missing_answers += 1
+            continue
+        
+        # Check for duplicate questions using normalized version for comparison
+        norm_question, _ = normalize_question(item.get('question', ''))
+        if norm_question in seen_questions:
+            duplicate_questions += 1
+        else:
+            seen_questions.add(norm_question)
+    
+    # Log findings
     if duplicate_answers:
         logger.warning(f"Found {len(duplicate_answers)} duplicate answers")
-        for dup in duplicate_answers[:10]:  # Log first 10 duplicates
-            logger.warning(f"Duplicate Answer: \n"
-                           f"Question: {dup['question']}\n"
-                           f"Duplicate of Question: {dup['duplicate_of']}")
-    
-    # Check for low-quality answers
-    low_quality_answers = []
-    for item in data:
-        if is_low_quality_answer(item['correct_answer']):
-            low_quality_answers.append(item)
-    
-    if low_quality_answers:
-        logger.warning(f"Found {len(low_quality_answers)} low-quality answers")
-        for answer in low_quality_answers[:10]:  # Log first 10 low-quality answers
-            logger.warning(f"Low-Quality Answer: \n"
-                           f"Question: {answer['question']}\n"
-                           f"Answer: {answer['correct_answer']}")
+    if missing_answers > 0:
+        logger.warning(f"Found {missing_answers} missing or invalid answers")
+    if duplicate_questions > 0:
+        logger.warning(f"Found {duplicate_questions} duplicate questions")
     
     return {
         'duplicate_answers': duplicate_answers,
-        'low_quality_answers': low_quality_answers
+        'missing_answers': missing_answers,
+        'duplicate_questions': duplicate_questions,
+        'total_items': len(data)
     }
 
 def write_output_file(data, output_filepath):
     """
-    Write the processed data back to a file in the original HTML-like format
+    Write the processed data back to a file in a clean, consistent HTML format
+    that is easy to parse and process.
     """
     logger.info(f"Writing output to {output_filepath}")
     
+    # First, deduplicate the data
+    deduplicated_data = deduplicate_data(data)
+    logger.info(f"Writing {len(deduplicated_data)} unique questions to output file")
+    
     with open(output_filepath, 'w', encoding='utf-8') as f:
-        for item in data:
-            # Use original question HTML if available, otherwise use current question
-            question_html = item.get('original_question', item['question'])
-            
-            # Reconstruct options HTML
-            options_html = ''.join([
-                f'<li class=\'{"correct" if opt["is_correct"] else ""}\'>{opt["text"]}</li>'
-                for opt in item.get('options', [])
-            ])
-            
-            # Construct correct answers string
-            correct_letters = [chr(65 + i) for i, opt in enumerate(item.get('options', [])) if opt['is_correct']]
-            correct_answers_str = ', '.join(correct_letters)
-            
-            # Create the full HTML-like entry
-            entry = f"""
-            <div>
-                <b>Question:</b><br>
-                {question_html}
-                <ul>
-                    {options_html}
-                </ul>
-                <br><b>Correct Answer(s):</b> {correct_answers_str}
-            </div>
-            """
-            
-            # Write the entry
-            f.write(entry + "\t")  # Maintain the tab separator
+        # Write headers
+        f.write("#separator:tab\n")
+        f.write("#html:true\n")
+        
+        for item in deduplicated_data:
+            try:
+                # Clean and normalize the question text
+                question_html = item.get('original_question', item.get('question', '')).strip()
+                
+                # Ensure options are properly formatted
+                options = item.get('options', [])
+                if not options:
+                    logger.warning(f"Missing options for question: {question_html[:100]}...")
+                    continue
+                
+                # Build options HTML with consistent formatting
+                options_html = []
+                correct_letters = []
+                for i, opt in enumerate(options):
+                    letter = chr(65 + i)  # A, B, C, D, etc.
+                    opt_text = opt.get('text', '').strip()
+                    is_correct = opt.get('is_correct', False)
+                    
+                    if not opt_text:
+                        continue
+                        
+                    if is_correct:
+                        correct_letters.append(letter)
+                        
+                    # Use consistent single quotes and no extra whitespace
+                    # Remove the letter from opt_text if it starts with it
+                    if opt_text.startswith(f"{letter}. "):
+                        opt_text = opt_text[3:].strip()
+                    elif opt_text.startswith(f"{letter}."):
+                        opt_text = opt_text[2:].strip()
+                        
+                    options_html.append(f"<li class='{('correct' if is_correct else '')}'>{letter}. {opt_text}</li>")
+                
+                if not options_html:
+                    logger.warning("No valid options found for question, skipping...")
+                    continue
+                
+                if not correct_letters:
+                    logger.warning("No correct answers found for question, skipping...")
+                    continue
+                
+                # Create the question entry with consistent formatting
+                question_entry = f"""<div>
+    <b>Question:</b><br>
+    {question_html}
+    <ul>
+        {chr(10).join('        ' + line for line in options_html)}
+    </ul>
+</div>"""
+                
+                # Create the answer entry with consistent formatting
+                answer_entry = f"""<div>
+    <b>Question:</b><br>
+    {question_html}
+    <ul>
+        {chr(10).join('        ' + line for line in options_html)}
+    </ul>
+    <br><b>Correct Answer(s):</b> {', '.join(sorted(correct_letters))}
+</div>"""
+                
+                # Write entries with tab separation and newline
+                f.write(f"{question_entry}\t{answer_entry}\n")
+                
+            except Exception as e:
+                logger.error(f"Error writing question: {str(e)}")
+                continue
     
     logger.info(f"Output written to {output_filepath}")
+    return len(deduplicated_data)
 
 def process_data(data, client=None, output_filepath="corrected_data.json", batch_size=10):
     """Processes the data, checks accuracy, and potentially generates better answers."""
-    # If batch size is greater than 1, use batch processing
     if batch_size > 1:
         return process_batch_data(data, client, batch_size, output_filepath)
     
     logger.info(f"Starting to process {len(data)} items")
-    
-    # Reset rate limiter state for new run
     rate_limiter.reset_backoff()
-    
-    # Track updated answers
     updated_answers_count = 0
     
-    # Try to load from checkpoint first
-    checkpoint_filepath = os.path.join('checkpoints', f"{os.path.basename(output_filepath)}.checkpoint")
-    start_index, checkpoint_data = load_safe_checkpoint(checkpoint_filepath)
-    
-    # If no checkpoint, try temp file
-    if start_index == 0 and checkpoint_data is None:
-        start_index, checkpoint_data = load_progress(output_filepath)
-    
+    # Load from checkpoint
+    start_index, checkpoint_data = load_checkpoint(output_filepath)
     corrected_data = checkpoint_data if checkpoint_data else []
     
-    if start_index > 0:
-        data = data[start_index:]  # Skip already processed items
+    # Calculate remaining items
+    remaining_data = data[start_index:] if start_index > 0 else data
+    
+    if not remaining_data:
+        logger.info("No remaining items to process")
+        return corrected_data
+    
+    logger.info(f"Processing remaining {len(remaining_data)} items starting from index {start_index}")
     
     total_requests = 0
     total_tokens = 0
@@ -870,7 +946,7 @@ def process_data(data, client=None, output_filepath="corrected_data.json", batch
         - Quota Limits: {rate_limiter.quota_limit_hits}""")
     
     try:
-        for i, item in enumerate(data, start=start_index):
+        for i, item in enumerate(remaining_data, start=start_index):
             current_time = datetime.now()
             if (current_time - last_progress_time).total_seconds() >= 60:
                 log_progress_stats()
@@ -887,7 +963,6 @@ def process_data(data, client=None, output_filepath="corrected_data.json", batch
                 
                 if not accurate:
                     logger.info(f"Generating new answer for item {i+1}")
-                    # Add a small delay between consecutive API calls for the same item
                     time.sleep(0.5)  # Half second delay between calls
                     
                     # Second API call - Generate better answer
@@ -898,38 +973,9 @@ def process_data(data, client=None, output_filepath="corrected_data.json", batch
                     
                     if new_answer:
                         logger.info("Successfully generated new answer")
-                        # Increment updated answers count
                         updated_answers_count += 1
-                        
-                        # Preserve the full original HTML structure
-                        # Extract the list of choices
-                        import re
-                        choices_match = re.search(r'<ul>(.*?)</ul>', item['question'], re.DOTALL)
-                        
-                        if choices_match:
-                            choices_html = choices_match.group(1)
-                            
-                            # Modify the correct choice to highlight the new answer
-                            modified_choices = re.sub(
-                                r'<li class=[\'"]correct[\'"]>(.*?)</li>', 
-                                f'<li class="correct">{new_answer}</li>', 
-                                choices_html
-                            )
-                            
-                            # Reconstruct the full HTML with the new answer
-                            modified_question_html = re.sub(
-                                r'<ul>.*?</ul>', 
-                                f'<ul>{modified_choices}</ul>', 
-                                item['question'], 
-                                flags=re.DOTALL
-                            )
-                            
-                            item["original_question"] = item["question"]
-                            item["question"] = modified_question_html
-                            item["original_correct_answer"] = item["correct_answer"]
-                            item["correct_answer"] = new_answer
-                        else:
-                            logger.warning("Could not extract choices from question HTML")
+                        item["original_correct_answer"] = item["correct_answer"]
+                        item["correct_answer"] = new_answer
                     else:
                         logger.warning("Failed to generate new answer, keeping original")
                 
@@ -938,19 +984,16 @@ def process_data(data, client=None, output_filepath="corrected_data.json", batch
                 
                 corrected_data.append(item)
                 
-                # Save progress every 10 items
+                # Save checkpoint every 10 items
                 if (i + 1) % 10 == 0:
-                    save_progress(corrected_data, output_filepath, i)
-                    save_safe_checkpoint(corrected_data, checkpoint_filepath, i)
+                    save_checkpoint(corrected_data, output_filepath, i)
                     log_progress_stats()
                 
             except ClientError as e:
                 if hasattr(e, 'code') and e.code == 429:
                     rate_limit_hits += 1
                     logger.error(f"Rate limit hit after {total_requests} requests and {total_tokens} tokens")
-                    # Save progress before stopping
-                    save_progress(corrected_data, output_filepath, i-1)
-                    save_safe_checkpoint(corrected_data, checkpoint_filepath, i-1)
+                    save_checkpoint(corrected_data, output_filepath, i-1)
                     log_progress_stats()
                     raise
                 else:
@@ -964,23 +1007,14 @@ def process_data(data, client=None, output_filepath="corrected_data.json", batch
         log_progress_stats()
         
         # Save final checkpoint
-        save_safe_checkpoint(corrected_data, checkpoint_filepath, len(data) - 1)
+        save_checkpoint(corrected_data, output_filepath, len(data) - 1)
         logger.info(f"Processing complete - Total requests: {total_requests}, Total tokens: {total_tokens}")
-        
-        # Log updated answers count
         logger.info(f"Number of answers updated: {updated_answers_count}")
     
     return corrected_data
 
 def process_batch_data(data, client=None, batch_size=5, output_filepath="corrected_data.json"):
-    """
-    Process data in batches to potentially improve throughput.
-    
-    :param data: List of questions
-    :param client: Ignored in new implementation (using global MODEL)
-    :param batch_size: Number of questions to process in each batch
-    :param output_filepath: Path to save processed data
-    """
+    """Process data in batches to potentially improve throughput."""
     # Warn about unusually large batch sizes
     if batch_size > 50:
         logger.warning(f"Large batch size of {batch_size} specified. This may impact performance or hit API limits.")
@@ -993,18 +1027,18 @@ def process_batch_data(data, client=None, batch_size=5, output_filepath="correct
     # Track updated answers
     updated_answers_count = 0
     
-    # Try to load from checkpoint first
-    checkpoint_filepath = os.path.join('checkpoints', f"{os.path.basename(output_filepath)}.checkpoint")
-    start_index, checkpoint_data = load_safe_checkpoint(checkpoint_filepath)
-    
-    # If no checkpoint, try temp file
-    if start_index == 0 and checkpoint_data is None:
-        start_index, checkpoint_data = load_progress(output_filepath)
-    
+    # Load from checkpoint
+    start_index, checkpoint_data = load_checkpoint(output_filepath)
     corrected_data = checkpoint_data if checkpoint_data else []
     
-    if start_index > 0:
-        data = data[start_index:]  # Skip already processed items
+    # Calculate remaining items to process
+    remaining_data = data[start_index:] if start_index > 0 else data
+    
+    if not remaining_data:
+        logger.info("No remaining items to process")
+        return corrected_data
+    
+    logger.info(f"Processing remaining {len(remaining_data)} items starting from index {start_index}")
     
     total_requests = 0
     total_tokens = 0
@@ -1075,8 +1109,8 @@ def process_batch_data(data, client=None, batch_size=5, output_filepath="correct
         - Quota Limits: {rate_limiter.quota_limit_hits}""")
     
     try:
-        for i in range(0, len(data), batch_size):
-            batch = data[i:i+batch_size]
+        for i in range(0, len(remaining_data), batch_size):
+            batch = remaining_data[i:i+batch_size]
             current_time = datetime.now()
             
             if (current_time - last_progress_time).total_seconds() >= 60:
@@ -1091,16 +1125,12 @@ def process_batch_data(data, client=None, batch_size=5, output_filepath="correct
                 total_requests += 1
                 successful_requests += 1
                 
-                # Track updated answers in the batch
-                batch_updated_answers = [item for item, (is_accurate, _) in zip(batch, batch_results) if not is_accurate]
-                updated_answers_count += len(batch_updated_answers)
-                
                 # Process each item in the batch
                 for j, (item, (is_accurate, accuracy_response)) in enumerate(zip(batch, batch_results)):
                     total_tokens += len(item['question'].split()) + len(item['correct_answer'].split()) + 1000
                     
                     if not is_accurate:
-                        logger.info(f"Generating new answer for item {i+j+1}")
+                        logger.info(f"Generating new answer for item {start_index+i+j+1}")
                         time.sleep(0.5)  # Half second delay between calls
                         
                         # Generate better answer
@@ -1110,27 +1140,27 @@ def process_batch_data(data, client=None, batch_size=5, output_filepath="correct
                         total_tokens += len(item['question'].split()) + len(item['correct_answer'].split()) + 1524
                         
                         if new_answer:
-                            logger.info(f"Successfully generated new answer for item {i+j+1}")
+                            logger.info(f"Successfully generated new answer for item {start_index+i+j+1}")
+                            updated_answers_count += 1
                             item["original_correct_answer"] = item["correct_answer"]
                             item["correct_answer"] = new_answer
                         else:
-                            logger.warning(f"Failed to generate new answer for item {i+j+1}, keeping original")
+                            logger.warning(f"Failed to generate new answer for item {start_index+i+j+1}, keeping original")
                     
                     # Store API responses
                     item["accuracy_check_response"] = accuracy_response
                     corrected_data.append(item)
                 
-                # Save progress every batch
-                save_progress(corrected_data, output_filepath, i + len(batch) - 1)
-                save_safe_checkpoint(corrected_data, checkpoint_filepath, i + len(batch) - 1)
+                # Save checkpoint every batch
+                current_index = start_index + i + len(batch) - 1
+                save_checkpoint(corrected_data, output_filepath, current_index)
                 log_progress_stats()
                 
             except ClientError as e:
                 if hasattr(e, 'code') and e.code == 429:
                     rate_limit_hits += 1
                     logger.error(f"Rate limit hit after {total_requests} requests and {total_tokens} tokens")
-                    save_progress(corrected_data, output_filepath, i-1)
-                    save_safe_checkpoint(corrected_data, checkpoint_filepath, i-1)
+                    save_checkpoint(corrected_data, output_filepath, start_index+i-1)
                     log_progress_stats()
                     raise
                 else:
@@ -1145,10 +1175,8 @@ def process_batch_data(data, client=None, batch_size=5, output_filepath="correct
         log_progress_stats()
         
         # Save final checkpoint
-        save_safe_checkpoint(corrected_data, checkpoint_filepath, len(data) - 1)
+        save_checkpoint(corrected_data, output_filepath, len(data) - 1)
         logger.info(f"Batch processing complete - Total requests: {total_requests}, Total tokens: {total_tokens}")
-        
-        # Log updated answers count
         logger.info(f"Number of answers updated: {updated_answers_count}")
     
     return corrected_data
@@ -1219,8 +1247,8 @@ def main():
     if validation_results['duplicate_answers']:
         logger.warning(f"Duplicate answers found: {len(validation_results['duplicate_answers'])}")
     
-    if validation_results['low_quality_answers']:
-        logger.warning(f"Low-quality answers found: {len(validation_results['low_quality_answers'])}")
+    if validation_results['missing_answers'] > 0:
+        logger.warning(f"Missing answers found: {validation_results['missing_answers']}")
 
     # Optional: Log details of updated answers
     if updated_answers:

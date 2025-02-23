@@ -4,6 +4,13 @@ import html  # Import the html module for escaping HTML
 import argparse  # Add argparse import
 import os
 from dotenv import load_dotenv
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,  # Change to INFO level
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 # Load environment variables
 load_dotenv()
@@ -28,6 +35,7 @@ my_model = genanki.Model(
         {'name': 'Options'},
         {'name': 'OptionsWithCorrect'},
         {'name': 'CorrectOptions'},
+        {'name': 'OptionalExplanation'},
     ],
     templates=[
         {
@@ -47,6 +55,7 @@ my_model = genanki.Model(
                     {{OptionsWithCorrect}}
                 </ul>
                 <br><b>Correct Answer(s):</b> {{CorrectOptions}}
+<br><b>Explanation(s):</b> {{OptionalExplanation}}
             </div>
             ''',
         }
@@ -77,47 +86,137 @@ li {
 
 # Function to process the text file and add cards to the deck
 def process_file(file_path):
-    with open(file_path, 'r') as file:
+    with open(file_path, 'r', encoding='utf-8') as file:
+        # Read the entire content
         content = file.read()
-        questions = re.split(r'\n\s*\n', content)  # Split by double newlines
-
-        for question_block in questions:
-            # Extract question and answer
-            question_match = re.search(r'<b>Question:</b><br>(.*?)<ul>(.*?)</ul>.*?<b>Correct Answer\(s\):</b>\s*([A-Z,\s]+)', question_block, re.DOTALL)
-            if question_match:
-                # Extract components
-                question = html.escape(question_match.group(1).strip())
-                options_html = question_match.group(2)
-                correct_answers = question_match.group(3).strip().split(',')
+        
+        # Verify header
+        if not content.startswith('#separator:tab\n#html:true\n'):
+            logging.error("Invalid file format. Expected #separator:tab and #html:true headers")
+            return
+            
+        # Remove headers
+        content = content[content.index('#html:true\n') + len('#html:true\n'):]
+        
+        # Split into question-answer pairs
+        # First find all <div> blocks
+        div_blocks = re.findall(r'<div>.*?</div>', content, re.DOTALL)
+        
+        # Group them into pairs (question and answer)
+        pairs = []
+        for i in range(0, len(div_blocks), 2):
+            if i + 1 < len(div_blocks):
+                pairs.append((div_blocks[i], div_blocks[i+1]))
+        
+        # Initialize counters
+        cards_processed = 0
+        empty_pairs = 0
+        failed_question_matches = 0
+        failed_answer_matches = 0
+        failed_option_matches = 0
+        other_errors = 0
+        
+        # Process each pair
+        for pair_num, (question_div, answer_div) in enumerate(pairs, start=1):
+            try:
+                # Extract question and options from the question part
+                question_match = re.search(r'<b>Question:</b><br>\s*(.*?)\s*<ul>', 
+                                        question_div, re.DOTALL | re.IGNORECASE)
+                if not question_match:
+                    failed_question_matches += 1
+                    logging.warning(f"Pair {pair_num}: Failed to match question pattern")
+                    continue
                 
-                # Parse options
-                answers = re.findall(r"<li(?:\s+class='.*?')?>([^<]+)</li>", options_html)
+                question = question_match.group(1).strip()
+                
+                # Extract options with their letters (A., B., etc.)
+                options = []
+                correct_answers = []
+                
+                # Match options with consistent class attribute format
+                for match in re.finditer(r"<li class='([^']*)'>[A-Z]\.\s+(.*?)</li>", question_div):
+                    class_value, option_text = match.groups()
+                    options.append(option_text.strip())
+                    if class_value and 'correct' in class_value:
+                        # Extract letter from the option text
+                        letter_match = re.search(r'([A-Z])\.', match.group(0))
+                        if letter_match:
+                            correct_answers.append(letter_match.group(1))
+                
+                # If no correct answers found from classes, try to find from Correct Answer(s) section
+                if not correct_answers:
+                    answers_match = re.search(r'<b>Correct Answer\(s\):</b>\s*([A-Z](?:\s*,\s*[A-Z])*)', 
+                                           answer_div, re.DOTALL | re.IGNORECASE)
+                    if answers_match:
+                        correct_answers = [ans.strip() for ans in answers_match.group(1).split(',')]
+                
+                if not options:
+                    failed_option_matches += 1
+                    logging.warning(f"Pair {pair_num}: No answers found in options")
+                    continue
+                
+                if not correct_answers:
+                    failed_answer_matches += 1
+                    logging.warning(f"Pair {pair_num}: No correct answers found")
+                    continue
                 
                 # Prepare options with correctness
                 options_with_correct = '<ul>' + ''.join([
-                    f'<li class="{("correct" if chr(65 + i) in correct_answers else "incorrect")}">{html.escape(opt)}</li>' 
-                    for i, opt in enumerate(answers)
+                    f'<li class="{"correct" if letter in correct_answers else ""}">{letter}. {opt}</li>'
+                    for opt, letter in zip(options, [chr(65 + i) for i in range(len(options))])
                 ]) + '</ul>'
                 
                 # Prepare options without correctness marking
-                options = '<ul>' + ''.join([
-                    f'<li>{html.escape(opt)}</li>' 
-                    for opt in answers
+                options_list = '<ul>' + ''.join([
+                    f'<li>{letter}. {opt}</li>'
+                    for opt, letter in zip(options, [chr(65 + i) for i in range(len(options))])
                 ]) + '</ul>'
                 
-                # Prepare correct options
-                correct_options_str = ', '.join(correct_answers)
-
+                # Prepare correct options string
+                correct_options_str = ', '.join(sorted(correct_answers))
+                
+                # Extract explanation if present
+                explanation = ''
+                explanation_match = re.search(r'<br><b>Explanation\(s\):</b>\s*(.*?)\s*(?:</div>|$)', 
+                                           answer_div, re.DOTALL | re.IGNORECASE)
+                if explanation_match:
+                    explanation = explanation_match.group(1).strip()
+                
                 # Add a card to the deck
                 my_deck.add_note(genanki.Note(
                     model=my_model,
                     fields=[
-                        question, 
-                        options, 
-                        options_with_correct, 
-                        correct_options_str
+                        question,
+                        options_list,
+                        options_with_correct,
+                        correct_options_str,
+                        explanation
                     ]
                 ))
+                
+                cards_processed += 1
+                
+            except Exception as e:
+                other_errors += 1
+                logging.error(f"Pair {pair_num}: Error processing pair: {str(e)}")
+                continue
+        
+        # Print summary
+        total_pairs = len(pairs)
+        logging.info("\n=== Processing Summary ===")
+        logging.info(f"Total pairs found: {total_pairs}")
+        logging.info(f"Successfully processed: {cards_processed}")
+        if empty_pairs > 0:
+            logging.info(f"Empty pairs skipped: {empty_pairs}")
+        if failed_question_matches > 0:
+            logging.info(f"Failed question matches: {failed_question_matches}")
+        if failed_answer_matches > 0:
+            logging.info(f"Failed answer matches: {failed_answer_matches}")
+        if failed_option_matches > 0:
+            logging.info(f"Failed option matches: {failed_option_matches}")
+        if other_errors > 0:
+            logging.info(f"Other errors: {other_errors}")
+        logging.info("=======================")
 
 def main():
     # Set up argument parser
