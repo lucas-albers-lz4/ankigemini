@@ -110,7 +110,12 @@ def process_file(file_path):
         
         # Process each div block
         for block_num, div_block in enumerate(div_blocks, start=1):
-            logging.info(f"Processing question {block_num}/{len(div_blocks)}")
+            # Check for explanation before logging
+            has_explanation = '<div class="detailed-explanation">' in div_block
+            log_message = f"Processing question {block_num}/{len(div_blocks)}"
+            if has_explanation:
+                log_message += " : OptionalExplanation"
+            logging.info(log_message)
             
             try:
                 # Extract question
