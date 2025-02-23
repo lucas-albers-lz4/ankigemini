@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
 from pathlib import Path
+import html
 
 # Suppress GRPC shutdown warning
 import warnings
@@ -780,6 +781,18 @@ def write_output_file(data, output_filepath):
     deduplicated_data = deduplicate_data(data)
     logger.info(f"Writing {len(deduplicated_data)} unique questions to output file")
     
+    def escape_urls(text):
+        """Helper function to escape URLs in text while preserving HTML tags"""
+        # Find URLs, including those wrapped in angle brackets
+        url_pattern = r'<?(https?://[^\s<>"]+|www\.[^\s<>"]+)>?'
+        
+        def replace_url(match):
+            url = match.group(1)  # Get the URL without the angle brackets
+            # Escape the URL and ensure it's not wrapped in angle brackets
+            return html.escape(url)
+        
+        return re.sub(url_pattern, replace_url, text)
+    
     with open(output_filepath, 'w', encoding='utf-8') as f:
         # Write headers
         f.write("#separator:tab\n")
@@ -789,6 +802,7 @@ def write_output_file(data, output_filepath):
             try:
                 # Clean and normalize the question text
                 question_html = item.get('original_question', item.get('question', '')).strip()
+                question_html = escape_urls(question_html)
                 
                 # Ensure options are properly formatted
                 options = item.get('options', [])
@@ -817,6 +831,10 @@ def write_output_file(data, output_filepath):
                     elif opt_text.startswith(f"{letter}."):
                         opt_text = opt_text[2:].strip()
                         
+                    # Escape URLs in the option text
+                    opt_text = escape_urls(opt_text)
+                        
+                    # Include the letter prefix in the output
                     options_html.append(f"<li class='{('correct' if is_correct else '')}'>{letter}. {opt_text}</li>")
                 
                 if not options_html:
@@ -827,27 +845,32 @@ def write_output_file(data, output_filepath):
                     logger.warning("No correct answers found for question, skipping...")
                     continue
                 
-                # Create the question entry with consistent formatting
-                question_entry = f"""<div>
-    <b>Question:</b><br>
-    {question_html}
-    <ul>
-        {chr(10).join('        ' + line for line in options_html)}
-    </ul>
-</div>"""
+                # Get the explanation if available
+                explanation = ""
+                if item.get('correct_answer') and isinstance(item['correct_answer'], str):
+                    # Extract the explanation div content
+                    explanation_match = re.search(r'<div class="detailed-explanation">(.*?)</div>', item['correct_answer'], re.DOTALL)
+                    if explanation_match:
+                        # Clean up the explanation by removing markdown code block markers and html tag
+                        explanation = explanation_match.group(0)
+                        explanation = re.sub(r'```html\s*', '', explanation)  # Remove ```html
+                        explanation = re.sub(r'```\s*', '', explanation)      # Remove ```
+                        # Escape URLs in the explanation
+                        explanation = escape_urls(explanation)
                 
-                # Create the answer entry with consistent formatting
-                answer_entry = f"""<div>
+                # Create a single entry with both question and correct answer
+                entry = f"""<div>
     <b>Question:</b><br>
     {question_html}
     <ul>
         {chr(10).join('        ' + line for line in options_html)}
     </ul>
     <br><b>Correct Answer(s):</b> {', '.join(sorted(correct_letters))}
+    {f'<br><b>Explanation(s):</b>\n{explanation}' if explanation else ''}
 </div>"""
                 
-                # Write entries with tab separation and newline
-                f.write(f"{question_entry}\t{answer_entry}\n")
+                # Write entry with tab separation and newline
+                f.write(f"{entry}\n")
                 
             except Exception as e:
                 logger.error(f"Error writing question: {str(e)}")
@@ -1213,6 +1236,11 @@ def main():
         type=int, 
         help='Limit the number of questions to process (useful for testing)'
     )
+    parser.add_argument(
+        '-q', '--question',
+        type=int,
+        help='Process only this specific question number (1-based index)'
+    )
     
     # Parse arguments
     args = parser.parse_args()
@@ -1223,7 +1251,15 @@ def main():
 
     # Load and process data
     data = load_data(args.input)
-    if args.limit:
+    
+    # Handle specific question if specified
+    if args.question is not None:
+        if args.question < 1 or args.question > len(data):
+            logger.error(f"Question number {args.question} is out of range. Valid range: 1-{len(data)}")
+            return
+        logger.info(f"Processing only question number {args.question}")
+        data = [data[args.question - 1]]
+    elif args.limit:
         data = data[:args.limit]
 
     # Process the data using the MODEL instead of client
