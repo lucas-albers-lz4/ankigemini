@@ -830,7 +830,7 @@ def deduplicate_data(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         norm_answer, orig_answer = normalize_answer(item.get("correct_answer", ""))
 
         # Create a unique key combining normalized question and answer
-        unique_key = "{norm_question}|{norm_answer}"
+        unique_key = f"{norm_question}|{norm_answer}"
 
         if unique_key in unique_questions:
             # If we already have this question, check which version is better
@@ -850,7 +850,7 @@ def deduplicate_data(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             # Store the item with original capitalization
             unique_questions[unique_key] = item
 
-    logger.info("Deduplication complete. Removed {duplicates_removed} duplicates.")
+    logger.info(f"Deduplication complete. Removed {duplicates_removed} duplicates.")
     return list(unique_questions.values())
 
 
@@ -914,11 +914,11 @@ def write_output_file(data: List[Dict[str, Any]], output_filepath: str) -> int:
     Write the processed data back to a file in a clean, consistent HTML format
     that is easy to parse and process.
     """
-    logger.info("Writing output to {output_filepath}")
+    logger.info(f"Writing output to {output_filepath}")
 
     # First, deduplicate the data
     deduplicated_data = deduplicate_data(data)
-    logger.info("Writing {len(deduplicated_data)} unique questions to output file")
+    logger.info(f"Writing {len(deduplicated_data)} unique questions to output file")
 
     def replace_url(match: re.Match) -> str:
         """Replace matched URLs with escaped versions"""
@@ -947,7 +947,7 @@ def write_output_file(data: List[Dict[str, Any]], output_filepath: str) -> int:
                 options = item.get("options", [])
                 if not options:
                     logger.warning(
-                        "Missing options for question: {question_html[:100]}..."
+                        f"Missing options for question: {question_html[:100]}..."
                     )
                     continue
 
@@ -967,9 +967,9 @@ def write_output_file(data: List[Dict[str, Any]], output_filepath: str) -> int:
 
                     # Use consistent single quotes and no extra whitespace
                     # Remove the letter from opt_text if it starts with it
-                    if opt_text.startswith("{letter}. "):
+                    if opt_text.startswith(f"{letter}. "):
                         opt_text = opt_text[3:].strip()
-                    elif opt_text.startswith("{letter}."):
+                    elif opt_text.startswith(f"{letter}."):
                         opt_text = opt_text[2:].strip()
 
                     # Escape URLs in the option text
@@ -977,7 +977,7 @@ def write_output_file(data: List[Dict[str, Any]], output_filepath: str) -> int:
 
                     # Include the letter prefix in the output
                     options_html.append(
-                        "<li class='{('correct' if is_correct else '')}'>{letter}. {opt_text}</li>"
+                        f"<li class='{('correct' if is_correct else '')}'>{letter}. {opt_text}</li>"
                     )
 
                 if not options_html:
@@ -1023,11 +1023,11 @@ def write_output_file(data: List[Dict[str, Any]], output_filepath: str) -> int:
                 # Write entry with tab separation and newline
                 f.write(f"{entry}\n")
 
-            except Exception:
-                logger.error("Error writing question: {str(e)}")
+            except Exception as e:
+                logger.error(f"Error writing question: {str(e)}")
                 continue
 
-    logger.info("Output written to {output_filepath}")
+    logger.info(f"Output written to {output_filepath}")
     return len(deduplicated_data)
 
 
@@ -1180,7 +1180,7 @@ class BatchProcessingStats:
 
 def log_final_statistics(stats: BatchProcessingStats):
     """Log comprehensive final statistics including parsing errors"""
-    logger.info("""
+    logger.info(f"""
 Processing Complete:
     Parse Error Summary:
     - Total Strict Parse Failures: {stats.total_strict_parse_failures}
@@ -1191,7 +1191,7 @@ Processing Complete:
 
     if stats.parsing_errors:
         for error in stats.parsing_errors:
-            logger.info("""    
+            logger.info(f"""    
     Batch {error["batch_index"]} ({error["items"]}):
     - Error Type: {error["error_type"]}
     - Details: {error["details"]}""")
@@ -1201,18 +1201,14 @@ Processing Complete:
 
 def log_batch_progress(stats: Dict[str, Any]) -> None:
     """Log batch processing progress statistics"""
-    logger.info(
-        """
-Batch Progress:
-- Items Processed: {stats["items_processed"]}/{stats["total_items"]} ({stats["items_processed"] / stats["total_items"] * 100:.1f}%))
+    logger.info(f"""Batch Progress:
+- Items Processed: {stats["items_processed"]}/{stats["total_items"]} ({(stats["items_processed"] / stats["total_items"] * 100):.1f}%)
 - Requests: {stats["total_requests"]} (Rate: {stats["requests_per_second"]:.2f}/s)
 - Rate Limits Hit: {stats["rate_limit_hits"]}
-- Current RPM: {stats["current_rpm"]}/{stats["rpm_limit"]} ({stats["rpm_percentage"]:.1f}%))
-- Current TPM: {stats["current_tpm"]}/{stats["tpm_limit"]} ({stats["tpm_percentage"]:.1f}%))
+- Current RPM: {stats["current_rpm"]}/{stats["rpm_limit"]} ({stats["rpm_percentage"]:.1f}%)
+- Current TPM: {stats["current_tpm"]}/{stats["tpm_limit"]} ({stats["tpm_percentage"]:.1f}%)
 - Elapsed Time: {stats["elapsed_time"]}s
-- Est. Completion: {stats["estimated_completion_time"]}
-""".strip()
-    )
+- Est. Completion: {stats["estimated_completion_time"]}""")
 
 
 def process_batch_data(
@@ -1223,17 +1219,12 @@ def process_batch_data(
     selected_questions: Optional[List[int]] = None,
 ) -> List[Dict[str, Any]]:
     """Process data in batches with optional question selection"""
-    stats = BatchProcessingStats(batch_size=batch_size)
 
     # If processing selected questions, adjust total items
-    if selected_questions:
-        stats.total_items = len(selected_questions)
-        data_to_process = [
-            data[i - 1] for i in selected_questions
-        ]  # Convert to 0-based index
-    else:
-        stats.total_items = len(data)
-        data_to_process = data
+    total_items = len(selected_questions) if selected_questions else len(data)
+    data_to_process = (
+        [data[i - 1] for i in selected_questions] if selected_questions else data
+    )
 
     try:
         start_time = time.time()
@@ -1242,7 +1233,6 @@ def process_batch_data(
         total_tokens = 0
         rate_limit_hits = 0
         processed_data = []
-        estimated_tokens = 0  # Initialize here to avoid undefined variable error
 
         for batch_start in range(0, len(data_to_process), batch_size):
             batch_end = min(batch_start + batch_size, len(data_to_process))
@@ -1289,25 +1279,30 @@ def process_batch_data(
                     total_requests += 1
                     total_tokens += estimated_tokens
 
-                # Calculate and log progress only if we have processed items
-                if items_processed > 0:
-                    elapsed_time = time.time() - start_time
-                    batch_stats = calculate_batch_statistics(
-                        items_processed=items_processed,
-                        total_items=stats.total_items,
-                        total_requests=total_requests,
-                        total_tokens=total_tokens,
-                        rate_limit_hits=rate_limit_hits,
-                        elapsed_time=elapsed_time,
-                        current_backoff=rate_limiter.min_request_interval
-                        if rate_limiter
-                        else 0,
-                    )
+                # Calculate and log progress
+                elapsed_time = time.time() - start_time
+                stats = calculate_batch_statistics(
+                    items_processed=items_processed,
+                    total_items=total_items,
+                    total_requests=total_requests,
+                    total_tokens=total_tokens,
+                    rate_limit_hits=rate_limit_hits,
+                    elapsed_time=elapsed_time,
+                    current_backoff=rate_limiter.min_request_interval
+                    if rate_limiter
+                    else 0,
+                )
 
-                    # Log progress
-                    log_batch_progress(batch_stats)
+                # Log progress
+                log_batch_progress(stats)
 
-                # Save checkpoint
+                # Write current progress to output file
+                logger.info(
+                    f"Writing current progress ({len(processed_data)} questions) to {output_filepath}"
+                )
+                write_output_file(processed_data, output_filepath)
+
+                # Save checkpoint after writing output
                 save_checkpoint(processed_data, output_filepath, batch_end - 1)
 
             except Exception as batch_error:
@@ -1320,12 +1315,21 @@ def process_batch_data(
                 continue
 
         # Log final statistics
-        log_final_statistics(stats)
+        final_stats = BatchProcessingStats(batch_size=batch_size)
+        final_stats.total_items = total_items
+        final_stats.items_processed = items_processed
+        final_stats.total_requests = total_requests
+        final_stats.total_tokens = total_tokens
+        final_stats.rate_limit_hits = rate_limit_hits
+        log_final_statistics(final_stats)
+
+        # Write final output file
+        write_output_file(processed_data, output_filepath)
 
         return processed_data
 
-    except Exception:
-        logger.error("Error processing batch data: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error processing batch data: {str(e)}")
         logger.error(traceback.format_exc())
         return processed_data
 
@@ -1424,73 +1428,134 @@ def process_multiple_answer_question(
     Process a question that requires multiple answers.
     Returns tuple of (correct_answer_letters, optional_explanation)
     """
-    prompt = """
-Please analyze this AWS certification multiple-answer question and determine the correct answers.
+    # Check if this is a valid question with options
+    if not question.get("question") or not question.get("options"):
+        logger.warning("Invalid question format: missing question or options")
+        return [], None
 
-CRITICAL FORMATTING REQUIREMENTS:
-Your response MUST follow this EXACT format for each question:
-{number}. [Accurate/Inaccurate]: {explanation}
+    # Check if this is a multiple answer question
+    is_multiple = is_multiple_answer_question(question["question"])
 
-Format Rules:
-1. Start each line with the question number and a period
-2. Add a single space after the period
-3. Use square brackets around either "Accurate" or "Inaccurate"
-4. Add a colon and a space after the closing bracket
-5. Provide a clear explanation
-6. Each response must be on its own line
-7. No extra text or formatting
+    prompt = f"""You are an AWS certification expert. For this {"multiple-answer" if is_multiple else "single-answer"} question, analyze each option and determine which {"TWO are" if is_multiple else "ONE is"} correct.
 
-Example Valid Responses:
-1. [Accurate]: The answer correctly explains AWS S3 as an object storage service.
-2. [Inaccurate]: The response confuses EC2 instances with RDS databases.
+Question: {question.get("question", "")}
 
-Example Invalid Responses (DO NOT USE):
-❌ 1) [Accurate] - Missing colon
-❌ 1. accurate: Missing brackets
-❌ [Accurate]: Missing question number
-❌ 1. [Accurate] The answer is correct - Missing colon
+Options:
+{chr(10).join(f"{chr(65 + i)}. {opt.get('text', '')}" for i, opt in enumerate(question.get("options", [])))}
 
-Questions to evaluate:
-{
-            chr(10).join(
-                f"{i + 1}. Q: {item.get('question', 'N/A')}\n   A: {item.get('correct_answer', 'N/A')}"
-                for i, item in enumerate(question["options"])
-            )
-        }
+REQUIRED RESPONSE FORMAT:
+1. List the {"TWO" if is_multiple else "ONE"} correct answer {"letters" if is_multiple else "letter"} in alphabetical order{", separated by comma" if is_multiple else ""}
+2. Provide a brief explanation
 
-IMPORTANT: 
-- Each response MUST match the exact format shown in the valid examples
-- Do not include any additional text or explanations
-- Responses must be numbered sequentially starting from 1
-- Verify your response format before submitting
-"""
+Example response:
+Correct {"Answers" if is_multiple else "Answer"}: {"B, E" if is_multiple else "B"}
+Explanation: {"Option B is correct because... Option E is correct because..." if is_multiple else "Option B is correct because..."}
+
+Your response MUST follow this exact format."""
 
     try:
         chat = MODEL.start_chat(history=[])
         response = chat.send_message(prompt)
+        response_text = response.text.strip()
 
-        # Parse the response for the two letters
-        answer_match = re.search(
-            r"Correct Answers:\s*\[([A-E]),\s*([A-E])\]", response.text
-        )
-        if not answer_match:
+        # Check for error indicators in response
+        error_phrases = [
+            "error:",
+            "error",
+            "invalid",
+            "cannot determine",
+            "unable to",
+            "not possible",
+            "incorrect format",
+            "too many",
+        ]
+        if any(phrase in response_text.lower() for phrase in error_phrases):
             logger.warning(
-                "Could not parse multiple answers from response: {response.text}"
+                f"Model indicates error or invalid response: {response_text}"
             )
             return [], None
 
-        letters = sorted([answer_match.group(1), answer_match.group(2)])
+        # Check for invalid response formats before parsing
+        if "Correct Answer: X" in response_text:
+            logger.warning("Invalid answer letter X detected")
+            return [], None
+        if "Correct Answers: A,B,C" in response_text:
+            logger.warning("Too many answers provided")
+            return [], None
+
+        # First try to find answers with the exact format
+        if is_multiple:
+            answer_match = re.search(
+                r"Correct Answers:\s*([A-E])\s*,\s*([A-E])",
+                response_text,
+                re.IGNORECASE,
+            )
+            if not answer_match:
+                # Try alternative formats
+                all_letters = re.findall(r"(?:^|\s)([A-E])(?:\s|,|$)", response_text)
+                if len(all_letters) >= 2:
+                    # Take the first two unique letters found
+                    unique_letters = sorted(list(set(all_letters)))[:2]
+                    # Validate letters
+                    if not all(letter.upper() in "ABCDE" for letter in unique_letters):
+                        logger.warning(
+                            f"Invalid answer letters found: {unique_letters}"
+                        )
+                        return [], None
+                    letters = unique_letters
+                else:
+                    logger.warning(
+                        f"Could not parse multiple answers from response: {response_text}"
+                    )
+                    return [], None
+            else:
+                letters = sorted([answer_match.group(1), answer_match.group(2)])
+                # Validate letters
+                if not all(letter.upper() in "ABCDE" for letter in letters):
+                    logger.warning(f"Invalid answer letters found: {letters}")
+                    return [], None
+        else:
+            # For single answer questions
+            answer_match = re.search(
+                r"Correct Answer:\s*([A-E])", response_text, re.IGNORECASE
+            )
+            if not answer_match:
+                # Try alternative format
+                all_letters = re.findall(r"(?:^|\s)([A-E])(?:\s|,|$)", response_text)
+                if all_letters:
+                    # Take first letter and validate
+                    letter = all_letters[0].upper()
+                    if letter not in "ABCDE":
+                        logger.warning(f"Invalid answer letter found: {letter}")
+                        return [], None
+                    letters = [letter]
+                else:
+                    logger.warning(
+                        f"Could not parse single answer from response: {response_text}"
+                    )
+                    return [], None
+            else:
+                letter = answer_match.group(1).upper()
+                if letter not in "ABCDE":
+                    logger.warning(f"Invalid answer letter found: {letter}")
+                    return [], None
+                letters = [letter]
 
         # Extract explanation if present
         explanation_match = re.search(
-            r"Explanation:\s*(.+?)(?=\n|$)", response.text, re.DOTALL
+            r"Explanation:\s*(.+?)(?=\n|$)", response_text, re.DOTALL
         )
         explanation = explanation_match.group(1).strip() if explanation_match else None
 
+        logger.info(
+            f"Parsed {'multiple' if is_multiple else 'single'} answers: {letters} with explanation: {explanation[:100] if explanation else 'None'}"
+        )
         return letters, explanation
 
-    except Exception:
-        logger.error("Error processing multiple answer question: {str(e)}")
+    except Exception as e:
+        logger.error(
+            f"Error processing {'multiple' if is_multiple else 'single'} answer question: {str(e)}"
+        )
         return [], None
 
 
@@ -1509,13 +1574,12 @@ def update_question_with_multiple_answers(
 
     # If we have an explanation, update or add it
     if explanation:
-        if "correct_answer" in updated_question:
-            # Try to preserve existing explanation div structure
-            explanation_div = """<div class="detailed-explanation">
+        # Try to preserve existing explanation div structure
+        explanation_div = f"""<div class="detailed-explanation">
     <p><strong>Core Explanation:</strong></p>
     {explanation}
 </div>"""
-            updated_question["correct_answer"] = explanation_div
+        updated_question["correct_answer"] = explanation_div
 
     return updated_question
 
@@ -1579,7 +1643,7 @@ def main() -> None:
                 )
                 return
 
-            logger.info("Processing questions: {question_numbers}")
+            logger.info(f"Processing questions: {question_numbers}")
             # Convert 1-based indices to 0-based and get the questions
             data = [data[q - 1] for q in question_numbers]
         except ValueError as e:
@@ -1604,22 +1668,24 @@ def main() -> None:
 
     # Log summary of updates and validation
     logger.info("\n--- Processing Summary ---")
-    logger.info("Total questions processed: {len(processed_data)}")
+    logger.info(f"Total questions processed: {len(processed_data)}")
 
     # Count updated answers
     updated_answers = [
         item for item in processed_data if item.get("original_correct_answer")
     ]
-    logger.info("Number of answers updated: {len(updated_answers)}")
+    logger.info(f"Number of answers updated: {len(updated_answers)}")
 
     # Log validation results
     if validation_results["duplicate_answers"]:
         logger.warning(
-            "Duplicate answers found: {len(validation_results['duplicate_answers'])}"
+            f"Duplicate answers found: {len(validation_results['duplicate_answers'])}"
         )
 
     if validation_results["missing_answers"] > 0:
-        logger.warning("Missing answers found: {validation_results['missing_answers']}")
+        logger.warning(
+            f"Missing answers found: {validation_results['missing_answers']}"
+        )
 
     # Optional: Log details of updated answers
     if updated_answers:
@@ -1628,6 +1694,11 @@ def main() -> None:
             logger.info("Question: {item['question'][:100]}...")
             logger.info("Original Answer: {item.get('original_correct_answer')}")
             logger.info("Updated Answer: {item['correct_answer']}\n")
+
+    # Deduplication logging
+    logger.info("Starting deduplication process...")
+    duplicates_removed = len(data) - len(processed_data)
+    logger.info(f"Deduplication complete. Removed {duplicates_removed} duplicates.")
 
 
 if __name__ == "__main__":
