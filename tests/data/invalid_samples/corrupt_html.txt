@@ -1,0 +1,12 @@
+#separator:tab
+#html:true
+<div>
+<b>Question:</b><br>
+Corrupt HTML
+<ul>
+<li class='correct'>A. First option
+<li>B. Unclosed option
+<div>Random div</div>
+</ul>
+<br><b>Correct Answer(s):</b> A
+</div> 

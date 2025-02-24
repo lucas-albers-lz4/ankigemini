@@ -1,0 +1,13 @@
+#separator:tab
+#html:true
+<div>
+<b>Question:</b><br>
+What is AWS S3?
+<ul>
+<li class='correct'>A. Object storage service</li>
+<li>B. Compute service</li>
+<li>C. Database service</li>
+<li>D. Network service</li>
+</ul>
+<br><b>Correct Answer(s):</b> A
+</div> 
