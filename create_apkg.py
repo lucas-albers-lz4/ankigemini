@@ -44,25 +44,12 @@ my_model = genanki.Model(
         {
             "name": "Card 1",
             "qfmt": """<div>
-                <b>Question:</b><br>
-                {{Question}}
-                <ul>
-                    {{Options}}
-                </ul>
-            </div>""",
-            "afmt": """
-            <div>
-                <b>Question:</b><br>
-                {{Question}}
-                <ul>
-                    {{OptionsWithCorrect}}
-                </ul>
+                <b>Question:</b><br>{{Question}}<ul>{{Options}}</ul></div>""",
+            "afmt": """<div>
+                <b>Question:</b><br>{{Question}}<ul>{{OptionsWithCorrect}}</ul>
                 <br><b>Correct Answer(s):</b> {{CorrectOptions}}
-                {{#OptionalExplanation}}
-                <br>{{OptionalExplanation}}
-                {{/OptionalExplanation}}
-            </div>
-            """,
+                {{#OptionalExplanation}}<br>{{OptionalExplanation}}{{/OptionalExplanation}}
+            </div>""",
         }
     ],
     css=""".card {
@@ -148,6 +135,7 @@ def extract_question_text(soup: BeautifulSoup) -> Optional[str]:
     """
     question_element = soup.find("b", string="Question:")
     if not question_element:
+        logging.warning("No question element found in HTML")
         return None
 
     # Get the text after the <b>Question:</b> element until the <ul> element
@@ -163,9 +151,17 @@ def extract_question_text(soup: BeautifulSoup) -> Optional[str]:
     # Clean up the question text
     question_text = question_text.replace("<br>", "").replace("<br/>", "").strip()
 
+    # Log if question was empty after cleanup
+    if not question_text:
+        logging.warning("Question text was empty after cleanup")
+        return None
+
     # Ensure the first letter of the question is capitalized
     if question_text and len(question_text) > 0:
+        original = question_text
         question_text = question_text[0].upper() + question_text[1:]
+        if original != question_text:
+            logging.debug("Capitalized first letter of question")
 
     return html.unescape(question_text)
 
@@ -221,17 +217,22 @@ def extract_explanation(soup: BeautifulSoup) -> str:
     # First try to find a detailed explanation div
     detailed_div = soup.find("div", class_="detailed-explanation")
     if detailed_div:
+        logging.debug("Found detailed explanation div with HTML formatting")
         return str(detailed_div)  # Return the entire div with HTML formatting
 
     # If no detailed div, look for explanation after the "Explanation(s):" text
     explanation = ""
     explanation_element = soup.find("b", string=re.compile(r"Explanation\(s\):"))
     if explanation_element:
-        # Get all text after the explanation element until the next div
+        logging.debug("Found simple explanation text")
+        # Get all text and HTML after the explanation element until the next div
         current = explanation_element.next_sibling
         while current and not (isinstance(current, Tag) and current.name == "div"):
             if isinstance(current, NavigableString):
                 explanation += str(current)
+            elif isinstance(current, Tag):
+                explanation += str(current)  # Preserve HTML tags
+                logging.debug(f"Preserved HTML tag in explanation: <{current.name}>")
             current = current.next_sibling
 
         # Clean up the explanation text
@@ -240,8 +241,11 @@ def extract_explanation(soup: BeautifulSoup) -> str:
             # Wrap simple explanations in the detailed-explanation div for consistent styling
             explanation = f"""<div class="detailed-explanation">
     <p><strong>Explanation:</strong></p>
-    <p>{html.escape(explanation)}</p>
+    <p>{explanation}</p>
 </div>"""
+            logging.debug("Wrapped simple explanation in detailed-explanation div")
+    else:
+        logging.debug("No explanation found in question")
 
     return explanation
 
@@ -269,19 +273,37 @@ def parse_question_numbers(question_str: str, total_questions: int) -> List[int]
         # Split by comma and convert to integers
         numbers = [int(q.strip()) for q in question_str.split(",")]
 
+        # Check for duplicates before validation
+        original_count = len(numbers)
+        unique_count = len(set(numbers))
+        if original_count != unique_count:
+            logging.info(
+                f"Removed {original_count - unique_count} duplicate question numbers"
+            )
+
         # Validate numbers are within range
         invalid = [n for n in numbers if n < 1 or n > total_questions]
         if invalid:
-            raise ValueError(
+            msg = (
                 f"Invalid question numbers: {invalid}. Valid range: 1-{total_questions}"
             )
+            logging.error(msg)
+            raise ValueError(msg)
 
-        return numbers
+        # Remove duplicates while preserving order
+        seen = set()
+        deduped_numbers = []
+        for n in numbers:
+            if n not in seen:
+                seen.add(n)
+                deduped_numbers.append(n)
+
+        return deduped_numbers
     except ValueError as e:
         if "invalid literal for int()" in str(e):
-            raise ValueError(
-                "Question numbers must be comma-separated integers (e.g., '1,2,3')"
-            )
+            msg = "Question numbers must be comma-separated integers (e.g., '1,2,3')"
+            logging.error(msg)
+            raise ValueError(msg)
         raise
 
 
@@ -316,6 +338,9 @@ def process_file(
         if selected_questions:
             try:
                 div_blocks = [div_blocks[i - 1] for i in selected_questions]
+                logging.info(
+                    f"Processing {len(div_blocks)} selected questions: {selected_questions}"
+                )
             except IndexError:
                 logging.error(
                     f"Question number out of range. Total questions: {len(div_blocks)}"
@@ -328,6 +353,8 @@ def process_file(
         failed_answer_matches = 0
         failed_option_matches = 0
         other_errors = 0
+        capitalized_questions = 0
+        preserved_html_count = 0
 
         # Process each div block
         for block_num, div_block in enumerate(div_blocks, start=1):
@@ -346,15 +373,26 @@ def process_file(
                 soup = BeautifulSoup(div_block, "html.parser")
 
                 # Extract question
-                question_text = extract_question_text(soup)
-                if not question_text:
+                original_question = extract_question_text(soup)
+                if not original_question:
                     failed_question_matches += 1
                     logging.warning(
                         f"Question {block_num}: Failed to match question pattern"
                     )
                     continue
 
-                logging.debug(f"Question {block_num} text: {question_text[:100]}...")
+                # Check if question was capitalized
+                if (
+                    original_question[0].isupper()
+                    and div_block.find("Question:") + 10 < len(div_block)
+                    and not div_block[div_block.find("Question:") + 10].isupper()
+                ):
+                    capitalized_questions += 1
+                    logging.debug(f"Question {block_num}: Capitalized first letter")
+
+                logging.debug(
+                    f"Question {block_num} text: {original_question[:100]}..."
+                )
 
                 # Extract options and correct answers
                 options, correct_answers = extract_options_and_answers(soup)
@@ -374,34 +412,37 @@ def process_file(
                         )
                         continue
 
-                # Prepare options with correctness
-                options_with_correct = "".join(
-                    [
-                        f'<li class="{"correct" if letter in correct_answers else ""}">{letter}. {text}</li>'
-                        for letter, text in options
-                    ]
-                )
-
-                # Prepare options without correctness marking
-                options_list = "".join(
-                    [f"<li>{letter}. {text}</li>" for letter, text in options]
-                )
-
-                # Prepare correct options string
-                correct_options_str = ", ".join(sorted(correct_answers))
-
                 # Extract explanation if present
                 explanation = extract_explanation(soup)
+                if (
+                    "<code>" in explanation
+                    or "<strong>" in explanation
+                    or "<ul>" in explanation
+                ):
+                    preserved_html_count += 1
+                    logging.debug(
+                        f"Question {block_num}: Preserved HTML formatting in explanation"
+                    )
 
                 # Add a card to the deck
                 my_deck.add_note(
                     genanki.Note(
                         model=my_model,
                         fields=[
-                            question_text,
-                            options_list,
-                            options_with_correct,
-                            correct_options_str,
+                            original_question,
+                            "".join(
+                                [
+                                    f"<li>{letter}. {text}</li>"
+                                    for letter, text in options
+                                ]
+                            ),
+                            "".join(
+                                [
+                                    f'<li class="{"correct" if letter in correct_answers else ""}">{letter}. {text}</li>'
+                                    for letter, text in options
+                                ]
+                            ),
+                            ", ".join(sorted(correct_answers)),
                             explanation,
                         ],
                     )
@@ -420,6 +461,8 @@ def process_file(
         logging.info("\n=== Processing Summary ===")
         logging.info(f"Total questions found: {len(div_blocks)}")
         logging.info(f"Successfully processed: {cards_processed}")
+        logging.info(f"Questions capitalized: {capitalized_questions}")
+        logging.info(f"HTML preserved in explanations: {preserved_html_count}")
         if failed_question_matches > 0:
             logging.info(f"Failed question matches: {failed_question_matches}")
         if failed_answer_matches > 0:
