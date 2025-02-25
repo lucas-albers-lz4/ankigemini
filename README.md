@@ -67,7 +67,7 @@ Import it into Anki and then import it to a text file:
 
 Then feed it into the script to check all the answers using Google Gemini LLM.
 The script:
-- Confirms any answer asking for 2 questions has two answers
+- Confirms any answer asking for N answers has N answers where N is 1 or 2
 - Adds additional optionalExplanation as needed
 - Confirms the answer to the question is correct, and fixes it if it is not
 
@@ -134,13 +134,8 @@ python create_apkg.py -i corrected_questions.txt -o aws_exam_deck.apkg
 ## Example Output
 
 ### Question Processing
-```json
-{
-    "processed": 100,
-    "corrected": 15,
-    "explanations_added": 45,
-    "processing_time": "10m 30s"
-}
+```
+
 ```
 
 ### Generated Anki Cards
