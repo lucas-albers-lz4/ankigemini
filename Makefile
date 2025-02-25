@@ -50,15 +50,9 @@ format: ## Format code using ruff and isort
 	isort .
 
 run: ## Run the application
-	$(PYTHON) main.py
+	@echo $(PYTHON) main.py -i INPUTFILE -o OUTPUTFILE
 
 venv: ## Create a new virtual environment
 	$(PYTHON) -m venv $(VENV_NAME)
 	@echo "Run 'source $(VENV_NAME)/bin/activate' to activate the virtual environment"
 
-docs: ## Build documentation
-	mkdocs build
-	@echo "Documentation built in site/index.html"
-
-docs-serve: ## Serve documentation locally
-	mkdocs serve 
