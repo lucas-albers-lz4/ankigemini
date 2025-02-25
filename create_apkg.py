@@ -6,7 +6,7 @@ import re
 from typing import List, Optional, Tuple
 
 import genanki
-from bs4 import BeautifulSoup  # Add BeautifulSoup for better HTML parsing
+from bs4 import BeautifulSoup, NavigableString, Tag
 from dotenv import load_dotenv
 
 # Configure logging
@@ -59,8 +59,7 @@ my_model = genanki.Model(
                 </ul>
                 <br><b>Correct Answer(s):</b> {{CorrectOptions}}
                 {{#OptionalExplanation}}
-                <br><b>Explanation:</b><br>
-                {{OptionalExplanation}}
+                <br>{{OptionalExplanation}}
                 {{/OptionalExplanation}}
             </div>
             """,
@@ -103,6 +102,10 @@ li {
 .detailed-explanation ul {
     margin: 5px 0;
     padding-left: 25px;
+}
+
+.detailed-explanation strong {
+    color: #2E7D32;
 }""",
 )
 
@@ -207,6 +210,7 @@ def extract_options_and_answers(
 def extract_explanation(soup: BeautifulSoup) -> str:
     """
     Extract explanation from the BeautifulSoup object.
+    Looks for both simple explanations and detailed explanation divs.
 
     Args:
         soup: BeautifulSoup object containing the explanation
@@ -214,21 +218,30 @@ def extract_explanation(soup: BeautifulSoup) -> str:
     Returns:
         Explanation text or empty string if not found
     """
+    # First try to find a detailed explanation div
+    detailed_div = soup.find("div", class_="detailed-explanation")
+    if detailed_div:
+        return str(detailed_div)  # Return the entire div with HTML formatting
+
+    # If no detailed div, look for explanation after the "Explanation(s):" text
     explanation = ""
     explanation_element = soup.find("b", string=re.compile(r"Explanation\(s\):"))
     if explanation_element:
-        # Get all text after the explanation element
+        # Get all text after the explanation element until the next div
         current = explanation_element.next_sibling
-        while current and not (hasattr(current, "name") and current.name == "div"):
-            if hasattr(current, "string") and current.string:
-                explanation += str(current.string)
-            elif isinstance(current, str):
-                explanation += current
-            current = current.next_sibling if hasattr(current, "next_sibling") else None
+        while current and not (isinstance(current, Tag) and current.name == "div"):
+            if isinstance(current, NavigableString):
+                explanation += str(current)
+            current = current.next_sibling
 
         # Clean up the explanation text
         explanation = explanation.strip()
-        explanation = html.unescape(explanation)
+        if explanation:
+            # Wrap simple explanations in the detailed-explanation div for consistent styling
+            explanation = f"""<div class="detailed-explanation">
+    <p><strong>Explanation:</strong></p>
+    <p>{html.escape(explanation)}</p>
+</div>"""
 
     return explanation
 
