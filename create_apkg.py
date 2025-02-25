@@ -58,7 +58,10 @@ my_model = genanki.Model(
                     {{OptionsWithCorrect}}
                 </ul>
                 <br><b>Correct Answer(s):</b> {{CorrectOptions}}
-<br><b>Explanation(s):</b> {{OptionalExplanation}}
+                {{#OptionalExplanation}}
+                <br><b>Explanation:</b><br>
+                {{OptionalExplanation}}
+                {{/OptionalExplanation}}
             </div>
             """,
         }
@@ -84,6 +87,22 @@ li {
 .correct {
     color: green;
     font-weight: bold;
+}
+
+.detailed-explanation {
+    margin-top: 10px;
+    padding: 10px;
+    background-color: #f5f5f5;
+    border-left: 4px solid #4CAF50;
+}
+
+.detailed-explanation p {
+    margin: 5px 0;
+}
+
+.detailed-explanation ul {
+    margin: 5px 0;
+    padding-left: 25px;
 }""",
 )
 
@@ -140,6 +159,11 @@ def extract_question_text(soup: BeautifulSoup) -> Optional[str]:
 
     # Clean up the question text
     question_text = question_text.replace("<br>", "").replace("<br/>", "").strip()
+
+    # Ensure the first letter of the question is capitalized
+    if question_text and len(question_text) > 0:
+        question_text = question_text[0].upper() + question_text[1:]
+
     return html.unescape(question_text)
 
 
@@ -169,6 +193,9 @@ def extract_options_and_answers(
         match = re.match(r"([A-Z])\.\s+(.*)", li_text)
         if match:
             letter, option_text = match.groups()
+            # Ensure the first letter of the option text is capitalized
+            if option_text and len(option_text) > 0:
+                option_text = option_text[0].upper() + option_text[1:]
             options.append((letter, option_text.strip()))
             # Check if this option is marked as correct
             if "class" in li.attrs and "correct" in li["class"]:
@@ -223,13 +250,37 @@ def find_correct_answers_from_text(soup: BeautifulSoup) -> List[str]:
     return []
 
 
-# Function to process the text file and add cards to the deck
-def process_file(file_path: str) -> None:
+def parse_question_numbers(question_str: str, total_questions: int) -> List[int]:
+    """Parse comma-delimited question numbers and validate them."""
+    try:
+        # Split by comma and convert to integers
+        numbers = [int(q.strip()) for q in question_str.split(",")]
+
+        # Validate numbers are within range
+        invalid = [n for n in numbers if n < 1 or n > total_questions]
+        if invalid:
+            raise ValueError(
+                f"Invalid question numbers: {invalid}. Valid range: 1-{total_questions}"
+            )
+
+        return numbers
+    except ValueError as e:
+        if "invalid literal for int()" in str(e):
+            raise ValueError(
+                "Question numbers must be comma-separated integers (e.g., '1,2,3')"
+            )
+        raise
+
+
+def process_file(
+    file_path: str, selected_questions: Optional[List[int]] = None
+) -> None:
     """
     Process the input file and add cards to the deck.
 
     Args:
         file_path: Path to the input file
+        selected_questions: Optional list of question numbers to process (1-based indices)
     """
     with open(file_path, "r", encoding="utf-8") as file:
         # Read the entire content
@@ -247,6 +298,16 @@ def process_file(file_path: str) -> None:
 
         # Find all <div> blocks - each div is a complete question
         div_blocks = re.findall(r"<div>.*?</div>", content, re.DOTALL)
+
+        # Filter questions if selected_questions is provided
+        if selected_questions:
+            try:
+                div_blocks = [div_blocks[i - 1] for i in selected_questions]
+            except IndexError:
+                logging.error(
+                    f"Question number out of range. Total questions: {len(div_blocks)}"
+                )
+                return
 
         # Initialize counters
         cards_processed = 0
@@ -369,6 +430,11 @@ def main():
         action="store_true",
         help="Enable verbose logging (DEBUG level)",
     )
+    parser.add_argument(
+        "-q",
+        "--questions",
+        help="Process specific question numbers (comma-delimited, e.g., '1,2,3')",
+    )
 
     # Parse arguments
     args = parser.parse_args()
@@ -377,8 +443,22 @@ def main():
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
+    # Process selected questions if specified
+    selected_questions = None
+    if args.questions:
+        try:
+            # Get total number of questions first
+            with open(args.input, "r", encoding="utf-8") as f:
+                content = f.read()
+                total_questions = len(re.findall(r"<div>.*?</div>", content, re.DOTALL))
+            selected_questions = parse_question_numbers(args.questions, total_questions)
+            logging.info(f"Processing selected questions: {selected_questions}")
+        except ValueError as e:
+            logging.error(str(e))
+            return
+
     # Process the input file
-    process_file(args.input)
+    process_file(args.input, selected_questions)
 
     # Save the deck to an .apkg file
     genanki.Package(my_deck).write_to_file(args.output)
