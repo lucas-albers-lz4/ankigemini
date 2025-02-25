@@ -41,3 +41,5 @@ htmlcov/
 checkpoints/
 *.log
 .env
+#ignore the files we are parsing
+*.txt
