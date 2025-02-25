@@ -75,10 +75,6 @@ The script:
 ## Installation
 
 1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/aws-cert-exam-tools.git
-   cd aws-cert-exam-tools
-   ```
 
 2. Create a virtual environment:
    ```bash
@@ -107,23 +103,13 @@ The script:
 ### Question Processing Script
 
 ```bash
-python scan-correct.py -i input_questions.txt -o corrected_questions.txt \
-    --tier paid_tier_1 \
-    --batch-size 10  # Optional: default is 20
-    --limit 100  # Optional: process only first 100 questions
+python3 scan_correct.py -i "AWS Cloud Practitioner Practice Exam Questions.txt" -o "AWS Cloud Practitioner Practice Exam Questions.CORRECTED.txt" --tier paid_tier_1
+
 ```
-
-#### Command Line Arguments
-- `-i/--input`: Input question file path (required)
-- `-o/--output`: Output file path (required)
-- `--tier`: API tier (free or paid_tier_1, default: free)
-- `--batch-size`: Questions per batch (default: 20)
-- `--limit`: Limit total questions processed (optional)
-
 ### Anki Deck Generator
 
 ```bash
-python create_apkg.py -i corrected_questions.txt -o aws_exam_deck.apkg
+python3 create_apkg.py -i "AWS Cloud Practitioner Practice Exam Questions.CORRECTED.txt" -o aws.apkg
 ```
 
 #### Command Line Arguments
