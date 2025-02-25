@@ -79,8 +79,8 @@ The script:
 2. Create a virtual environment:
    ```bash
    python3 -m venv venv
-   source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
-    pip install -r requirements.txt
+   source venv/bin/activate  
+   pip install -r requirements.txt
 
    ```
 
