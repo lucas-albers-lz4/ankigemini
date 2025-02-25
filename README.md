@@ -112,18 +112,42 @@ python3 scan_correct.py -i "AWS Cloud Practitioner Practice Exam Questions.txt" 
 python3 create_apkg.py -i "AWS Cloud Practitioner Practice Exam Questions.CORRECTED.txt" -o aws.apkg
 ```
 
-#### Command Line Arguments
-- `-i/--input`: Input corrected questions file (required)
-- `-o/--output`: Output Anki package file path (required)
-- `-v/--verbose`: Enable verbose logging
-- `-q/--questions`: Process specific questions (e.g., "1,2,3")
-
-## Example Output
-
-### Question Processing
+## Example Output updating accuracy of questions
+```bash
+python3 ./scan_correct.py -i "AWS Cloud Practitioner Practice Exam Questions.txt" -o "AWS Cloud Practitioner Practice Exam Questions.CORRECTED.txt" --tier paid_tier_1 -q "4,5,9" 2>&1 |grep -v WARNING
+2025-02-25 12:57:03,816 - INFO - Initializing Gemini client...
+2025-02-25 12:57:03,816 - INFO - Gemini client configured successfully
+2025-02-25 12:57:03,817 - INFO - Initialized Gemini model: gemini-2.0-flash
+2025-02-25 12:57:03,817 - INFO - Rate limiter initialized for paid_tier_1 tier with: 2000 RPM, 4000000 TPM, No RPD limit
+2025-02-25 12:57:03,817 - INFO - Loading data from AWS Cloud Practitioner Practice Exam Questions.txt
+2025-02-25 12:57:04,095 - INFO - Loaded 973 questions
+2025-02-25 12:57:04,095 - INFO - Processing questions: [4, 5, 9]
+2025-02-25 12:57:04,097 - INFO - Loaded checkpoint, resuming from index 972
+2025-02-25 12:57:04,097 - INFO - Resuming from checkpoint at index 972 with 0 items remaining
+2025-02-25 12:57:04,097 - INFO - 
+Processing Complete:
+    Parse Error Summary:
+    - Total Strict Parse Failures: 0
+    - Successfully Recovered (Lenient): 0
+    - Complete Parse Failures: 0
+    
+    Detailed Parse Error Log:
+2025-02-25 12:57:04,097 - INFO -     No parsing errors encountered
+2025-02-25 12:57:04,097 - INFO - Writing output to AWS Cloud Practitioner Practice Exam Questions.CORRECTED.txt
+2025-02-25 12:57:04,101 - INFO - Writing 972 unique questions to output file
+2025-02-25 12:57:04,107 - INFO - Output written to AWS Cloud Practitioner Practice Exam Questions.CORRECTED.txt
+2025-02-25 12:57:04,107 - INFO - Writing output to AWS Cloud Practitioner Practice Exam Questions.CORRECTED.txt
+2025-02-25 12:57:04,110 - INFO - Writing 972 unique questions to output file
+2025-02-25 12:57:04,116 - INFO - Output written to AWS Cloud Practitioner Practice Exam Questions.CORRECTED.txt
+2025-02-25 12:57:04,116 - INFO - Starting comprehensive dataset validation
+2025-02-25 12:57:04,121 - INFO - 
+--- Processing Summary ---
+2025-02-25 12:57:04,121 - INFO - Total questions processed: 973
+2025-02-25 12:57:04,121 - INFO - Number of answers updated: 0
+2025-02-25 12:57:04,121 - INFO - Starting deduplication process...
+2025-02-25 12:57:04,121 - INFO - Deduplication complete. Removed -970 duplicates.
 ```
 
-```
 
 ### Generated Anki Cards
 ![Example Anki Card](docs/images/example_card.png)
@@ -170,7 +194,7 @@ pytest tests/test_apkg.py
    ```
    Error: 429 Too Many Requests
    ```
-   Solution: Reduce batch size or upgrade to paid tier
+   Solution: Upgrade to paid tier
 
 2. **Input File Format**
    ```
@@ -187,7 +211,7 @@ pytest tests/test_apkg.py
 - Rotate keys regularly
 
 ### Rate Limiting
-The tool implements rate limiting to prevent API abuse and excessive costs
+You must handle 429s...
 
 ## Contributing
 
