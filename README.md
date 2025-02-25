@@ -149,9 +149,6 @@ Processing Complete:
 ```
 
 
-### Generated Anki Cards
-![Example Anki Card](docs/images/example_card.png)
-
 ## Logging
 
 - Detailed processing logs in `scan_correct.log`
@@ -161,7 +158,7 @@ Processing Complete:
 ## Rate Limiting
 
 - Implements intelligent rate limiting for API calls
-- Supports both free and paid Google Gemini API tiers (free will work but it's slow)
+- Supports both free and paid Google Gemini API tiers (free will work but it's slow, and you need to consider the request per minute and per day)
 - Automatic backoff and retry mechanisms
 
 ## Development Setup
