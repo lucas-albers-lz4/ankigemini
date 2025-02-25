@@ -14,9 +14,10 @@ import traceback
 import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar, Union, cast
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar, cast
 
 import google.generativeai as genai
+from bs4 import BeautifulSoup, NavigableString, Tag
 from dotenv import load_dotenv
 from google.genai.errors import ClientError
 from google.generativeai.types import GenerationConfig
@@ -322,7 +323,8 @@ rate_limiter: Optional[RateLimiter] = None
 # Function to load the data
 def load_data(filepath: str) -> List[Dict[str, Any]]:
     """
-    Parse the exam questions file into a structured JSON-like format.
+    Parse the exam questions file into a structured format.
+    Each question appears twice in the file - once without answers marked and once with answers.
     """
     logger.info(f"Loading data from {filepath}")
 
@@ -331,36 +333,20 @@ def load_data(filepath: str) -> List[Dict[str, Any]]:
     with open(filepath, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # Regex pattern to extract questions and answers
-    pattern = r"<div>\s*<b>Question:</b><br>\s*(.*?)\s*<ul>(.*?)</ul>.*?<br><b>Correct Answer\(s\):</b>\s*([A-Z,\s]+)\s*</div>"
+    # Split content into individual question divs
+    # Each question appears twice - once without answers and once with answers
+    question_pairs = re.findall(r'"([^"]+)"\t"([^"]+)"', content)
 
-    matches = re.findall(pattern, content, re.DOTALL | re.MULTILINE)
+    for q1, q2 in question_pairs:
+        # Parse both versions of the question
+        question_no_answers = parse_question(q1)
+        question_with_answers = parse_question(q2)
 
-    for match in matches:
-        question_text = match[0].strip()
-        options_html = match[1]
-        correct_answers = match[2].strip().split(",")
-
-        # Extract options
-        option_pattern = r"<li(?:\s+class=\'.*?\')?>([^<]+)</li>"
-        options = re.findall(option_pattern, options_html)
-
-        # Prepare options with correct flag
-        formatted_options: List[Dict[str, Union[str, bool]]] = []
-        for i, option in enumerate(options):
-            letter = chr(65 + i)  # A, B, C, D, etc.
-            is_correct = letter in correct_answers
-            formatted_options.append({"text": option.strip(), "is_correct": is_correct})
-
-        question = {
-            "question": question_text,
-            "options": formatted_options,
-            "correct_answer": next(
-                (opt["text"] for opt in formatted_options if opt["is_correct"]), None
-            ),
-        }
-
-        questions.append(question)
+        # Combine the information from both versions
+        if question_with_answers:  # Prefer the version with answers
+            questions.append(question_with_answers)
+        elif question_no_answers:  # Fallback to version without answers
+            questions.append(question_no_answers)
 
     logger.info(f"Loaded {len(questions)} questions")
     return questions
@@ -895,11 +881,11 @@ def validate_dataset(data: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     # Log findings
     if duplicate_answers:
-        logger.warning("Found {len(duplicate_answers)} duplicate answers")
+        logger.warning(f"Found {len(duplicate_answers)} duplicate answers")
     if missing_answers > 0:
-        logger.warning("Found {missing_answers} missing or invalid answers")
+        logger.warning(f"Found {missing_answers} missing or invalid answers")
     if duplicate_questions > 0:
-        logger.warning("Found {duplicate_questions} duplicate questions")
+        logger.warning(f"Found {duplicate_questions} duplicate questions")
 
     return {
         "duplicate_answers": duplicate_answers,
@@ -917,7 +903,7 @@ def write_output_file(data: List[Dict[str, Any]], output_filepath: str) -> int:
     logger.info(f"Writing output to {output_filepath}")
 
     # First, deduplicate the data
-    deduplicated_data = deduplicate_data(data)
+    deduplicated_data = deduplicate_questions(data)
     logger.info(f"Writing {len(deduplicated_data)} unique questions to output file")
 
     def replace_url(match: re.Match) -> str:
@@ -929,6 +915,14 @@ def write_output_file(data: List[Dict[str, Any]], output_filepath: str) -> int:
         """Escape URLs in text to prevent HTML rendering issues"""
         url_pattern = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
         return str(re.sub(url_pattern, replace_url, text))
+
+    def normalize_class_attribute(class_attr: str) -> bool:
+        """Normalize different class attribute formats to determine if correct"""
+        if not class_attr:
+            return False
+        # Remove quotes and extra whitespace
+        cleaned = class_attr.strip().strip("\"'")
+        return "correct" in cleaned.lower()
 
     with open(output_filepath, "w", encoding="utf-8") as f:
         # Write headers
@@ -943,6 +937,12 @@ def write_output_file(data: List[Dict[str, Any]], output_filepath: str) -> int:
                 ).strip()
                 question_html = escape_urls(question_html)
 
+                # Check if this is a multiple answer question
+                is_multiple = (
+                    "choose two" in question_html.lower()
+                    or "(choose 2)" in question_html.lower()
+                )
+
                 # Ensure options are properly formatted
                 options = item.get("options", [])
                 if not options:
@@ -954,10 +954,18 @@ def write_output_file(data: List[Dict[str, Any]], output_filepath: str) -> int:
                 # Build options HTML with consistent formatting
                 options_html: List[str] = []
                 correct_letters: List[str] = []
+
+                # First try to get correct answers from options
                 for i, opt in enumerate(options):
                     letter = chr(65 + i)  # A, B, C, D, etc.
                     opt_text = opt.get("text", "").strip()
-                    is_correct = opt.get("is_correct", False)
+
+                    # Handle different formats of is_correct
+                    is_correct = False
+                    if isinstance(opt.get("is_correct"), bool):
+                        is_correct = opt["is_correct"]
+                    elif isinstance(opt.get("class"), str):
+                        is_correct = normalize_class_attribute(opt["class"])
 
                     if not opt_text:
                         continue
@@ -980,13 +988,50 @@ def write_output_file(data: List[Dict[str, Any]], output_filepath: str) -> int:
                         f"<li class='{('correct' if is_correct else '')}'>{letter}. {opt_text}</li>"
                     )
 
+                # If no correct answers found in options, try to get from correct_answer field
+                if not correct_letters and item.get("correct_answer"):
+                    # Try to extract letters from the correct_answer field
+                    answer_text = str(item["correct_answer"])
+                    # Look for patterns like "A, B" or "A,B" or "A and B" or just "A"
+                    letter_matches = re.findall(
+                        r"(?:^|\s|,\s*)([A-E])(?:\s*,|\s|$)", answer_text
+                    )
+                    if letter_matches:
+                        correct_letters = sorted(list(set(letter_matches)))
+                        # Update the options to mark correct answers
+                        options_html = []
+                        for i, opt in enumerate(options):
+                            letter = chr(65 + i)
+                            opt_text = opt.get("text", "").strip()
+                            if opt_text.startswith(f"{letter}. "):
+                                opt_text = opt_text[3:].strip()
+                            elif opt_text.startswith(f"{letter}."):
+                                opt_text = opt_text[2:].strip()
+                            opt_text = escape_urls(opt_text)
+                            is_correct = letter in correct_letters
+                            options_html.append(
+                                f"<li class='{('correct' if is_correct else '')}'>{letter}. {opt_text}</li>"
+                            )
+
                 if not options_html:
                     logger.warning("No valid options found for question, skipping...")
                     continue
 
                 if not correct_letters:
-                    logger.warning("No correct answers found for question, skipping...")
+                    logger.warning(
+                        f"No correct answers found for question: {question_html[:100]}..."
+                    )
                     continue
+
+                # Validate number of correct answers matches question type
+                if is_multiple and len(correct_letters) != 2:
+                    logger.warning(
+                        f"Question requires two answers but found {len(correct_letters)} for: {question_html[:100]}..."
+                    )
+                elif not is_multiple and len(correct_letters) > 1:
+                    logger.warning(
+                        f"Single answer question has multiple answers: {question_html[:100]}..."
+                    )
 
                 # Get the explanation if available
                 explanation = ""
@@ -1227,19 +1272,35 @@ def process_batch_data(
     )
 
     try:
+        # Try to load checkpoint
+        current_index, checkpoint_data = load_checkpoint(output_filepath)
+
+        # Initialize variables
         start_time = time.time()
         items_processed = 0
         total_requests = 0
         total_tokens = 0
         rate_limit_hits = 0
-        processed_data = []
+
+        # If we have checkpoint data, use it
+        if checkpoint_data is not None:
+            processed_data = checkpoint_data
+            items_processed = current_index + 1
+            # Skip already processed items
+            data_to_process = data_to_process[items_processed:]
+            logger.info(
+                f"Resuming from checkpoint at index {current_index} with {len(data_to_process)} items remaining"
+            )
+        else:
+            processed_data = []
+            logger.info(f"Starting fresh processing of {len(data_to_process)} items")
 
         for batch_start in range(0, len(data_to_process), batch_size):
             batch_end = min(batch_start + batch_size, len(data_to_process))
             batch = data_to_process[batch_start:batch_end]
 
             logger.info(
-                f"Processing batch {batch_start // batch_size + 1} (Items {batch_start + 1} to {batch_end})"
+                f"Processing batch {batch_start // batch_size + 1} (Items {items_processed + 1} to {items_processed + len(batch)})"
             )
 
             try:
@@ -1250,7 +1311,7 @@ def process_batch_data(
                     # Check if this is a multiple-answer question
                     if is_multiple_answer_question(item["question"]):
                         logger.info(
-                            f"Detected multiple-answer question at index {batch_start + idx}"
+                            f"Detected multiple-answer question at index {items_processed + idx}"
                         )
 
                         # Process multiple answer question
@@ -1267,7 +1328,7 @@ def process_batch_data(
 
                             if set(correct_letters) != set(current_correct):
                                 logger.info(
-                                    f"Updating multiple answers for question {batch_start + idx}: Original: {current_correct} -> New: {correct_letters}"
+                                    f"Updating multiple answers for question {items_processed + idx}: Original: {current_correct} -> New: {correct_letters}"
                                 )
 
                                 current_item = update_question_with_multiple_answers(
@@ -1303,7 +1364,7 @@ def process_batch_data(
                 write_output_file(processed_data, output_filepath)
 
                 # Save checkpoint after writing output
-                save_checkpoint(processed_data, output_filepath, batch_end - 1)
+                save_checkpoint(processed_data, output_filepath, items_processed - 1)
 
             except Exception as batch_error:
                 logger.error(
@@ -1582,6 +1643,189 @@ def update_question_with_multiple_answers(
         updated_question["correct_answer"] = explanation_div
 
     return updated_question
+
+
+def parse_question(html_content: str) -> Dict[str, Any]:
+    """Parse a question from its HTML content."""
+    soup = BeautifulSoup(html_content, "html.parser")
+
+    # Get question text
+    question_div = soup.find("div")
+    if not question_div:
+        logger.warning("No div found in question HTML")
+        return {
+            "question": "",
+            "options": [],
+            "is_multiple": False,
+            "correct_answers": [],
+            "explanation": "",
+        }
+
+    # Extract question text (everything between <b>Question:</b><br> and <ul>)
+    question_text = ""
+    current = question_div.find("b", string="Question:")
+    if current:
+        current = current.next_sibling  # Skip the <br>
+        while current and not (isinstance(current, Tag) and current.name == "ul"):
+            if isinstance(current, NavigableString):
+                question_text += str(current)
+            current = current.next_sibling
+
+    question_text = re.sub(r"\s+", " ", question_text).strip()
+
+    # Enhanced multiple answer detection
+    multiple_patterns = [
+        r"choose\s*(?:two|2)",  # "choose two" or "choose 2"
+        r"select\s*(?:two|2)",  # "select two" or "select 2"
+        r"\(choose\s*(?:two|2)\)",  # "(choose two)" or "(choose 2)"
+        r"\(select\s*(?:two|2)\)",  # "(select two)" or "(select 2)"
+        r"choose\s*(?:TWO|2)",  # "choose TWO"
+        r"select\s*(?:TWO|2)",  # "select TWO"
+    ]
+    is_multiple = any(
+        re.search(pattern, question_text, re.IGNORECASE)
+        for pattern in multiple_patterns
+    )
+
+    # Get options
+    options = []
+    correct_count = 0
+    for li in soup.find_all("li"):
+        # Get the option text
+        option_text = li.get_text().strip()
+
+        # Extract the option letter (A, B, C, etc.)
+        letter_match = re.match(r"^([A-E])[.\s]", option_text)
+        if letter_match:
+            letter = letter_match.group(1)
+            # Remove the letter prefix from the text
+            option_text = option_text[len(letter) + 1 :].strip()
+        else:
+            letter = chr(65 + len(options))  # A, B, C, etc.
+
+        # Enhanced class attribute handling
+        is_correct = False
+        class_attr = li.get("class", [])
+        if class_attr:
+            if isinstance(class_attr, list):
+                is_correct = any("correct" in c.lower() for c in class_attr)
+            else:
+                is_correct = "correct" in class_attr.lower()
+
+        if is_correct:
+            correct_count += 1
+
+        options.append(
+            {"letter": letter, "text": option_text, "is_correct": is_correct}
+        )
+
+    # Look for explicit correct answers
+    correct_answers = []
+    correct_text = soup.find(string=re.compile(r"Correct Answer\(s\):", re.IGNORECASE))
+    if correct_text:
+        # Extract letters from the correct answers text
+        correct_letters = re.findall(r"[A-E]", correct_text.parent.get_text())
+        correct_answers = [letter for letter in correct_letters]
+
+        # Update is_correct flags and count based on correct_answers
+        if correct_answers:
+            correct_count = 0  # Reset count
+            for option in options:
+                if option["letter"] in correct_answers:
+                    option["is_correct"] = True
+                    correct_count += 1
+
+    # Validate correct answer count
+    if is_multiple and correct_count != 2:
+        logger.warning(
+            f"Question marked as 'Choose TWO' but has {correct_count} correct answers: {question_text[:100]}..."
+        )
+    elif not is_multiple and correct_count > 1:
+        logger.warning(
+            f"Single answer question has {correct_count} answers marked: {question_text[:100]}..."
+        )
+    elif correct_count == 0:
+        logger.warning(
+            f"No correct answers found for question: {question_text[:100]}..."
+        )
+
+    # Get explanation if present
+    explanation = ""
+    explanation_div = soup.find("div", class_="detailed-explanation")
+    if explanation_div:
+        explanation = str(explanation_div)
+
+    return {
+        "question": question_text,
+        "options": options,
+        "is_multiple": is_multiple,
+        "correct_answers": correct_answers,
+        "explanation": explanation,
+        "correct_count": correct_count,  # Added for validation purposes
+    }
+
+
+def deduplicate_questions(questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Deduplicate questions by combining information from duplicate entries.
+    Returns a list of unique questions with their correct answers properly marked.
+    """
+    # Use normalized question text as key for deduplication
+    unique_questions: Dict[str, Dict[str, Any]] = {}
+
+    for q in questions:
+        if not q or not q.get("question"):  # Skip empty questions
+            continue
+
+        # Create a normalized version of the question text for comparison
+        norm_text = re.sub(r"\s+", " ", q["question"].lower().strip())
+
+        if norm_text in unique_questions:
+            # Combine information from both versions
+            existing = unique_questions[norm_text]
+
+            # Update correct answers if the current version has them marked
+            current_correct = q.get("correct_answers", [])
+            if current_correct:
+                # Merge correct answers
+                existing_correct = existing.get("correct_answers", [])
+                all_correct = set(existing_correct + current_correct)
+                existing["correct_answers"] = sorted(list(all_correct))
+
+                # Update options with correct answers
+                for i, opt in enumerate(q.get("options", [])):
+                    if opt.get("is_correct"):
+                        existing["options"][i]["is_correct"] = True
+
+            # Keep the explanation if present
+            if q.get("explanation") and not existing.get("explanation"):
+                existing["explanation"] = q["explanation"]
+        else:
+            unique_questions[norm_text] = q
+
+    # Convert back to list and validate
+    result = []
+    for q in unique_questions.values():
+        # Count correct answers
+        correct_count = sum(1 for opt in q.get("options", []) if opt.get("is_correct"))
+
+        # Validate multiple answer questions
+        if q.get("is_multiple") and correct_count != 2:
+            logger.warning(
+                f"Multiple answer question has {correct_count} answers marked: {q['question'][:100]}..."
+            )
+        elif not q.get("is_multiple") and correct_count > 1:
+            logger.warning(
+                f"Single answer question has {correct_count} answers marked: {q['question'][:100]}..."
+            )
+        elif correct_count == 0:
+            logger.warning(
+                f"No correct answers found for question: {q['question'][:100]}..."
+            )
+
+        result.append(q)
+
+    return result
 
 
 def main() -> None:
