@@ -1,3 +1,23 @@
+"""
+Type-checked Anki deck generator script.
+IMPORTANT: This file uses strict type checking. When making edits:
+- All functions must include complete type annotations
+- Use proper type imports from typing module
+- Common types used:
+  - Dict[str, Any] for JSON-like data
+  - Optional[T] for nullable values
+  - List[Dict[str, Any]] for question data
+  - Tuple[...] for multi-return values
+  - BeautifulSoup type hints for parsing
+  - str for HTML content
+- Run mypy/ruff after edits to verify type correctness
+- Pay special attention to:
+  - HTML parsing return types
+  - Optional fields in card data
+  - List comprehension types
+  - Tuple return values
+"""
+
 import argparse  # Add argparse import
 import html  # Import the html module for escaping HTML
 import logging

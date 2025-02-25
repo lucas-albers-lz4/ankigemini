@@ -1,3 +1,23 @@
+"""
+Type-checked AWS exam question processing script.
+IMPORTANT: This file uses strict type checking. When making edits:
+- All functions must include complete type annotations
+- Use proper type imports from typing module
+- Common types used:
+  - Dict[str, Any] for JSON-like data
+  - Optional[T] for nullable values
+  - List[Dict[str, Any]] for question data
+  - Tuple[...] for multi-return values
+  - Callable[..., T] for function decorators
+  - TypeVar for generic types
+- Run mypy/ruff after edits to verify type correctness
+- Pay special attention to:
+  - Closing brackets in complex types
+  - Optional/Union type completeness
+  - Return type annotations
+  - Decorator type signatures
+"""
+
 import argparse
 import html
 import json
@@ -1851,8 +1871,8 @@ def main() -> None:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=10,
-        help="Number of questions to process in each batch (recommended: 5-20, depending on API limits)",
+        default=20,
+        help="Number of questions to process in each batch (default: 20)",
     )
     parser.add_argument(
         "--limit",
