@@ -68,7 +68,8 @@ Import it into Anki and then import it to a text file:
 Then feed it into the script to check all the answers using Google Gemini LLM.
 The script:
 - Confirms any answer asking for N answers has N answers where N is 1 or 2
-- Adds additional optionalExplanation as needed
+- Adds additional "optionalExplanation" as needed
+- Sometimes the model gives an additional explanation in regards to the question/answer, we capture that and include in the answer display
 - Confirms the answer to the question is correct, and fixes it if it is not
 
 ## Installation
