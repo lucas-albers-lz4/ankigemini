@@ -222,8 +222,7 @@ You must handle 429s...
 
 - API usage is subject to Google Gemini rate limits
 - Quality of answer generation depends on AI model performance
-- Large batches may require significant processing time
-- Memory usage scales with batch size
+- Large batches trigger rate limiting
 
 ## License
 
