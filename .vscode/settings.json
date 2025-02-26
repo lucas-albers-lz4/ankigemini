@@ -1,0 +1,10 @@
+{
+    "errorLens.enabled": true,
+    "errorLens.enabledInMergeConflict": true,
+    "errorLens.fontStyleItalic": true,
+    "errorLens.margin": "1ch",
+    "errorLens.messageEnabled": true,
+    "errorLens.messageMaxChars": 0,
+    "errorLens.statusBarMessageEnabled": true,
+    "makefile.configureOnOpen": true
+}
