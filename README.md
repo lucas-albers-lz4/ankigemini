@@ -234,4 +234,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Google Gemini AI
 - Anki Flashcard Platform
 - Reddit AWS Cloud Exam Community
-- All contributors and testers 
