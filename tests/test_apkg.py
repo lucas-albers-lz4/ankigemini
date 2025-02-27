@@ -12,7 +12,6 @@ from create_apkg import (
     extract_explanation,
     extract_options_and_answers,
     extract_question_text,
-    extract_text_from_html,
     find_correct_answers_from_text,
     parse_question_numbers,
     process_file,
@@ -211,19 +210,6 @@ class TestQuestionNumberParsing:
         """Test handling of whitespace in question number strings."""
         assert parse_question_numbers(" 1, 2,3 ", 5) == [1, 2, 3]
         assert parse_question_numbers("1,  2,   3", 5) == [1, 2, 3]
-
-
-def test_extract_text_from_html() -> None:
-    """Test extracting text from HTML content."""
-    # Test cases
-    html_content = "<p>This is a test</p>"
-    result = extract_text_from_html(html_content)
-    assert result == "This is a test"
-
-    # Test with multiple paragraphs
-    html_content = "<p>First paragraph</p><p>Second paragraph</p>"
-    result = extract_text_from_html(html_content)
-    assert result == "First paragraph\nSecond paragraph"
 
 
 def test_extract_question_text() -> None:

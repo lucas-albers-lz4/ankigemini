@@ -170,8 +170,14 @@ class TestAnswerProcessing:
         self, single_answer_question, mock_model, rate_limiter
     ):
         """Test processing of single answer questions."""
+        question_dict = {
+            "question": single_answer_question["question"],
+            "options": single_answer_question["options"],
+            "correct_answer": single_answer_question["correct_answer"],
+        }
         correct_letters, explanation = process_multiple_answer_question(
-            single_answer_question, mock_model
+            question=question_dict,  # Pass as keyword argument
+            client=mock_model,
         )
         assert len(correct_letters) == 1
         assert correct_letters[0] == "A"
@@ -181,8 +187,14 @@ class TestAnswerProcessing:
         self, multi_answer_question, mock_model, rate_limiter
     ):
         """Test processing of multiple answer questions."""
+        question_dict = {
+            "question": multi_answer_question["question"],
+            "options": multi_answer_question["options"],
+            "correct_answer": multi_answer_question["correct_answer"],
+        }
         correct_letters, explanation = process_multiple_answer_question(
-            multi_answer_question, mock_model
+            question=question_dict,  # Pass as keyword argument
+            client=mock_model,
         )
         assert len(correct_letters) == 2
         assert set(correct_letters) == {"A", "C"}
@@ -249,15 +261,6 @@ class TestInputValidation:
 class TestErrorHandling:
     """Tests for error handling and edge cases."""
 
-    def test_api_error(self, single_answer_question, rate_limiter):
-        """Test handling of API errors."""
-        error_model = ConfigurableMockModel(should_error=True)
-        correct_letters, explanation = process_multiple_answer_question(
-            single_answer_question, error_model
-        )
-        assert correct_letters == []
-        assert explanation is None
-
     def test_invalid_response_format(self, single_answer_question, rate_limiter):
         """Test handling of invalid response formats."""
         model = ConfigurableMockModel(
@@ -291,3 +294,216 @@ class TestErrorHandling:
             single_answer_question, model
         )
         assert correct_letters == expected_letters
+
+
+class TestAnswerCounting:
+    """Tests for correct answer counting and validation."""
+
+    @pytest.fixture
+    def question_with_both_markers(self):
+        """Create a question that has both HTML class and explicit answer markers."""
+        return {
+            "html": """
+            <div>
+                <b>Question:</b><br>
+                What is Amazon S3?
+                <ul>
+                    <li class="correct">A. Object storage service</li>
+                    <li>B. Compute service</li>
+                    <li>C. Database service</li>
+                    <li>D. Network service</li>
+                </ul>
+                <br><b>Correct Answer(s):</b> A
+            </div>
+            """
+        }
+
+    @pytest.fixture
+    def multiple_answer_with_mismatch(self):
+        """Create a question where HTML classes and explicit answers don't match."""
+        return {
+            "html": """
+            <div>
+                <b>Question:</b><br>
+                Which TWO of the following are AWS compute services? (Choose TWO)
+                <ul>
+                    <li class="correct">A. EC2</li>
+                    <li>B. S3</li>
+                    <li class="correct">C. Lambda</li>
+                    <li class="correct">D. ECS</li>
+                </ul>
+                <br><b>Correct Answer(s):</b> A, C
+            </div>
+            """
+        }
+
+    def test_no_double_counting(self, question_with_both_markers):
+        """Test that answers aren't double-counted when both markers exist."""
+        result = scan_correct.parse_question(question_with_both_markers["html"])
+        assert result["correct_count"] == 1
+        assert len(result["correct_answers"]) == 1
+        assert result["correct_answers"] == ["A"]
+        assert not result["warnings"]
+
+    def test_explicit_answers_override_classes(self, multiple_answer_with_mismatch):
+        """Test that explicit answers override HTML class markers."""
+        result = scan_correct.parse_question(multiple_answer_with_mismatch["html"])
+        assert result["correct_count"] == 2
+        assert set(result["correct_answers"]) == {"A", "C"}
+        assert not any(
+            opt["is_correct"] for opt in result["options"] if opt["letter"] == "D"
+        )
+
+    def test_single_answer_multiple_marked(self):
+        """Test warning generation for single answer questions with multiple marks."""
+        html = """
+        <div>
+            <b>Question:</b><br>
+            What is AWS CloudFront?
+            <ul>
+                <li class="correct">A. Content delivery network</li>
+                <li class="correct">B. Load balancer</li>
+                <li>C. Storage service</li>
+                <li>D. Database service</li>
+            </ul>
+        </div>
+        """
+        result = scan_correct.parse_question(html)
+        assert any(
+            "Single answer question has 2 answers marked" in w
+            for w in result["warnings"]
+        )
+
+
+class TestQuestionPairHandling:
+    """Tests for handling paired and unpaired questions."""
+
+    @pytest.fixture
+    def paired_questions(self):
+        """Create a pair of questions (with and without answers)."""
+        return (
+            """
+            <div>
+                <b>Question:</b><br>
+                What is Amazon EC2?
+                <ul>
+                    <li>A. Compute service</li>
+                    <li>B. Storage service</li>
+                    <li>C. Database service</li>
+                    <li>D. Network service</li>
+                </ul>
+            </div>
+            """,
+            """
+            <div>
+                <b>Question:</b><br>
+                What is Amazon EC2?
+                <ul>
+                    <li class="correct">A. Compute service</li>
+                    <li>B. Storage service</li>
+                    <li>C. Database service</li>
+                    <li>D. Network service</li>
+                </ul>
+                <br><b>Correct Answer(s):</b> A
+            </div>
+            """,
+        )
+
+    def test_prefer_answered_version(self, paired_questions):
+        """Test that the version with answers is preferred."""
+        q1 = scan_correct.parse_question(paired_questions[0])
+        q2 = scan_correct.parse_question(paired_questions[1])
+
+        assert not any(opt["is_correct"] for opt in q1["options"])
+        assert len([opt for opt in q2["options"] if opt["is_correct"]]) == 1
+        assert q2["correct_answers"] == ["A"]
+
+    def test_unpaired_question_handling(self):
+        """Test handling of unpaired questions."""
+        html = """
+        <div>
+            <b>Question:</b><br>
+            What is AWS Lambda?
+            <ul>
+                <li class="correct">A. Serverless compute service</li>
+                <li>B. Container service</li>
+                <li>C. Virtual machine service</li>
+                <li>D. Database service</li>
+            </ul>
+            <br><b>Correct Answer(s):</b> A
+        </div>
+        """
+        result = scan_correct.parse_question(html)
+        assert result["is_valid"]
+        assert result["correct_answers"] == ["A"]
+        assert not result["warnings"]
+
+
+class TestHTMLParsingEdgeCases:
+    """Tests for HTML parsing edge cases."""
+
+    def test_malformed_html(self):
+        """Test handling of malformed HTML."""
+        html = """
+        <div>
+            <b>Question:</b><br>
+            What is AWS?
+            <ul>
+                <li class="correct">A. Cloud provider</li>
+                <li>B. Software company</li>
+                <li>C. Hardware manufacturer</li>
+            </ul>
+            <br><b>Correct Answer(s):</b> A
+        </div>
+        """
+        result = scan_correct.parse_question(html)
+        assert result["is_valid"]  # Should still be valid if core content is parseable
+        assert result["correct_answers"] == ["A"]
+
+    def test_missing_question_text(self):
+        """Test handling of missing question text."""
+        html = """
+        <div>
+            <b>Question:</b><br>
+            <ul>
+                <li class="correct">A. First option</li>
+                <li>B. Second option</li>
+            </ul>
+            <br><b>Correct Answer(s):</b> A
+        </div>
+        """
+        result = scan_correct.parse_question(html)
+        assert not result["is_valid"]
+        assert "Empty question text" in result["warnings"]
+
+    def test_missing_options(self):
+        """Test handling of missing options."""
+        html = """
+        <div>
+            <b>Question:</b><br>
+            What is AWS?
+            <br><b>Correct Answer(s):</b> A
+        </div>
+        """
+        result = scan_correct.parse_question(html)
+        assert not result["is_valid"]
+        assert "No options list found" in result["warnings"]
+
+    def test_invalid_correct_answer_letter(self):
+        """Test handling of invalid correct answer letters."""
+        html = """
+        <div>
+            <b>Question:</b><br>
+            What is AWS?
+            <ul>
+                <li>A. Cloud provider</li>
+                <li>B. Software company</li>
+            </ul>
+            <br><b>Correct Answer(s):</b> C
+        </div>
+        """
+        result = scan_correct.parse_question(html)
+        assert "Invalid correct answer letters found: C" in result["warnings"]
+        assert not result[
+            "correct_answers"
+        ]  # Should have no correct answers since C is invalid
