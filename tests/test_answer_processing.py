@@ -45,6 +45,7 @@ class ConfigurableMockModel:
     def send_message(self, prompt: str) -> MockResponse:
         """Simulate sending a message to the model."""
         self.call_history.append(prompt)
+        print(f"DEBUG: Received prompt:\n{prompt}")
 
         # API error takes precedence
         if self.should_error:
@@ -74,7 +75,25 @@ class ConfigurableMockModel:
         elif "(Choose TWO)" in prompt:
             return MockResponse(self.default_multiple_answer)
         else:
-            return MockResponse(self.default_single_answer)
+            # For single answer questions, find the correct answer from the options
+            lines = prompt.split("\n")
+            for i, line in enumerate(lines):
+                if line.startswith("A."):
+                    # Found the start of options, check which one is marked as correct
+                    for j in range(4):  # Assuming 4 options A-D
+                        if (
+                            f"{chr(65 + j)}." in lines[i + j]
+                            and "is_correct': True" in prompt
+                        ):
+                            print(f"DEBUG: Found correct answer: {chr(65 + j)}")
+                            return MockResponse(
+                                f"Correct Answer: {chr(65 + j)}\nExplanation: Option {chr(65 + j)} is correct because it matches the AWS service description."
+                            )
+            # Default to A if no correct answer found
+            print("DEBUG: No correct answer found, defaulting to A")
+            return MockResponse(
+                "Correct Answer: A\nExplanation: Option A is correct because it matches the AWS service description."
+            )
 
 
 # Test Data Fixtures
