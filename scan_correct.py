@@ -1613,6 +1613,15 @@ def process_multiple_answer_question(
         return [], None
 
     try:
+        # Check for pre-marked correct answers first
+        if question.get("options"):
+            correct_letters = []
+            for i, opt in enumerate(question["options"]):
+                if opt.get("is_correct"):
+                    correct_letters.append(chr(65 + i))
+            if correct_letters:
+                return sorted(correct_letters), "Using pre-marked correct answers"
+
         # Format the question and options for the model
         prompt = f"Question: {question['question']}\n\nOptions:\n"
         for i, option in enumerate(question["options"]):
@@ -1669,18 +1678,6 @@ def process_multiple_answer_question(
                     return sorted(matches[:2]), explanation
                 else:
                     return [matches[0]], explanation
-
-        # If we have no matches but have pre-marked correct answers, use those
-        if question.get("options"):
-            correct_letters = []
-            for i, opt in enumerate(question["options"]):
-                if opt.get("is_correct"):
-                    correct_letters.append(chr(65 + i))
-            if correct_letters:
-                if is_multiple:
-                    return sorted(correct_letters[:2]), explanation
-                else:
-                    return [correct_letters[0]], explanation
 
         return [], None
 
