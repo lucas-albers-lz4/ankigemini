@@ -37,6 +37,13 @@ This project provides a toolkit for processing and enhancing AWS Cloud Practitio
    - Converts processed exam questions into an Anki flashcard deck
    - Creates interactive study materials for AWS Cloud Practitioner exam preparation
 
+## KNOWN ISSUES or AREAS to Improve
+- We really should be setting our prompt with a schema definition telling it we want this json response in this particular format
+- As is we are having lot of regex and code path's to evaluate and confirm the accuracy of the response.
+- This would also let us properly batch the queries much faster.
+- This should reduce some area's from requiring two prompts to one.
+- That is a future improvement.
+
 ## Features
 
 ### Question Processing Script
